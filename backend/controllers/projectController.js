@@ -4,7 +4,9 @@ import mammoth from 'mammoth';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const pdfParse = require('pdf-parse');
+// pdf-parse v2 exports a class, not a function (v1 did); calling the old
+// default export threw on every PDF upload.
+const { PDFParse } = require('pdf-parse');
 
 // Multer in-memory storage for parsing text
 const storage = multer.memoryStorage();
@@ -120,8 +122,13 @@ export const uploadProjectFile = async (req, res) => {
         if (mimetype.includes('text') || lowerName.endsWith('.md') || lowerName.endsWith('.txt')) {
             extractedContent = buffer.toString('utf-8');
         } else if (mimetype === 'application/pdf' || lowerName.endsWith('.pdf')) {
-            const data = await pdfParse(buffer);
-            extractedContent = data.text;
+            const parser = new PDFParse({ data: buffer });
+            try {
+                const data = await parser.getText();
+                extractedContent = data.text;
+            } finally {
+                await parser.destroy();
+            }
         } else if (mimetype.includes('wordprocessingml') || lowerName.endsWith('.docx') || lowerName.endsWith('.doc')) {
             try {
                 // Mammoth is primarily for docx, but attempt extraction

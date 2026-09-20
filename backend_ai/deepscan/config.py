@@ -8,10 +8,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # ----- Paths -----
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-BACKEND_DIR = PROJECT_ROOT / "backend"
-STYLES_DIR = BACKEND_DIR / "styles"
-OUTPUT_DIR = PROJECT_ROOT / "output"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent      # backend_ai/
+PACKAGE_DIR = Path(__file__).resolve().parent               # backend_ai/deepscan/
+STYLES_DIR = PACKAGE_DIR / "styles"
+# Same folder routes.py serves downloads from (and .gitignore excludes).
+OUTPUT_DIR = PACKAGE_DIR / "output"
 OUTPUT_FORMATTED_DIR = OUTPUT_DIR / "formatted"
 OUTPUT_REPORTS_DIR = OUTPUT_DIR / "reports"
 

@@ -5,10 +5,11 @@ Main pipeline controller. Routes tasks to agents and maintains shared state.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from ..schemas.docir import DocIR
 from ..schemas.reports import ComplianceReport, CitationReport, FormatResult
@@ -55,6 +56,27 @@ class Orchestrator:
         guidelines_text: Optional[str] = None,
         guidelines_url: Optional[str] = None,
         output_dir: Optional[Path] = None,
+        on_step: Optional[Callable[[str], None]] = None,
+    ) -> FormatResult:
+        """Execute the pipeline without blocking the event loop.
+
+        Every step is blocking work (file parsing, python-docx, sometimes LLM
+        calls), so it runs in a worker thread via ``run_sync``. ``on_step`` is
+        called from that thread with a message as each step starts.
+        """
+        return await asyncio.to_thread(
+            self.run_sync, input_path, style_id, guidelines_text,
+            guidelines_url, output_dir, on_step,
+        )
+
+    def run_sync(
+        self,
+        input_path: Path,
+        style_id: str = "apa7",
+        guidelines_text: Optional[str] = None,
+        guidelines_url: Optional[str] = None,
+        output_dir: Optional[Path] = None,
+        on_step: Optional[Callable[[str], None]] = None,
     ) -> FormatResult:
         """
         Execute the full formatting pipeline.
@@ -65,6 +87,7 @@ class Orchestrator:
             guidelines_text: Optional raw guideline text for LLM interpretation.
             guidelines_url: Optional URL to a style guide page.
             output_dir: Directory for output files.
+            on_step: Optional callback, called with a message as each step starts.
 
         Returns:
             FormatResult with formatted doc path, compliance report, etc.
@@ -72,13 +95,18 @@ class Orchestrator:
         start = time.time()
         result = FormatResult()
 
+        def step(message: str) -> None:
+            logger.info(message)
+            if on_step:
+                on_step(message)
+
         try:
             # ── Step 1: Ingest ───────────────────────────────
-            logger.info("Step 1/6 — Ingesting %s", input_path.name)
+            step("Step 1/6 — Ingesting document...")
             docir: DocIR = self.ingest.parse(input_path)
 
             # ── Step 2: Get StyleSpec ────────────────────────
-            logger.info("Step 2/6 — Loading style spec: %s", style_id)
+            step(f"Step 2/6 — Loading style spec ({style_id})...")
             style_spec: StyleSpec = self.rule_interpreter.get_style_spec(
                 style_id=style_id,
                 guidelines_text=guidelines_text,
@@ -86,7 +114,7 @@ class Orchestrator:
             )
 
             # ── Step 3: Structure Detection ──────────────────
-            logger.info("Step 3/6 — Detecting document structure")
+            step("Step 3/6 — Detecting document structure...")
             docir = self.structure_detector.detect(docir)
 
             # Build structure summary
@@ -96,12 +124,12 @@ class Orchestrator:
             result.structure_summary = role_counts
 
             # ── Step 4: Citation Engine ──────────────────────
-            logger.info("Step 4/6 — Processing citations & references")
+            step("Step 4/6 — Processing citations & references...")
             docir, citation_report = self.citation_engine.process(docir, style_spec)
             result.citation_report = citation_report
 
             # ── Step 5: Transformer ──────────────────────────
-            logger.info("Step 5/6 — Applying formatting")
+            step("Step 5/6 — Applying formatting...")
             output_path, changes = self.transformer.transform(
                 docir=docir,
                 style_spec=style_spec,
@@ -112,7 +140,7 @@ class Orchestrator:
             result.output_filename = str(output_path)
 
             # ── Step 6: Validator ────────────────────────────
-            logger.info("Step 6/6 — Validating compliance")
+            step("Step 6/6 — Validating compliance...")
             compliance: ComplianceReport = self.validator.validate(
                 output_path=output_path,
                 style_spec=style_spec,
@@ -120,6 +148,14 @@ class Orchestrator:
                 citation_report=citation_report,
             )
             result.compliance_report = compliance
+
+            # Hand the labelled DocIR to stage 2 with the same line merges the
+            # DOCX got, so the LaTeX builder sees whole paragraphs and roles.
+            from ..agents.paragraph_merger import ParagraphMerger
+            merger = ParagraphMerger()
+            plan = merger.build_merge_plan(docir)
+            result.docir = merger.apply_merge_plan(docir, plan) if plan else docir
+            result.docir_raw = docir
 
             result.success = True
 

@@ -103,7 +103,7 @@ def _equation_via_llm(description: str) -> str | None:
         agent = Agent(
             name="EquationAgent",
             model=AgnoGroq(
-                id=os.getenv("TOOLKIT_MODEL", "llama-3.3-70b-versatile"),
+                id=os.getenv("TOOLKIT_MODEL") or os.getenv("LLM_MODEL", "openai/gpt-oss-120b"),
                 api_key=api_key,
             ),
             instructions=(

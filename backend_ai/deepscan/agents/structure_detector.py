@@ -103,6 +103,8 @@ NUMBERED_REF_RE = re.compile(r"^\d{1,3}[\.\)]\s*[A-Z]")
 NUMERIC_CITATION_RE = re.compile(
     r"\((\d{1,3}(?:\s*[,;–\-]\s*\d{1,3})*)\)"
 )
+# Bare numeral list as it appears in a superscript run: "1", "1,2", "3–5"
+SUPERSCRIPT_CITATION_RE = re.compile(r"\d{1,3}(?:\s*[,;–\-]\s*\d{1,3})*")
 
 # Author-date parenthetical:  (Smith, 2023)  (Smith & Jones, 2023; Doe, 2021)
 AUTHOR_DATE_PAREN_RE = re.compile(
@@ -450,8 +452,23 @@ class StructureDetectorAgent:
 
     # ── Pass 6: Abstract detection ───────────────────────────
 
+    @staticmethod
+    def _looks_like_keywords(text: str) -> bool:
+        """'Keywords: a; b' or a pipe-separated term list ('a | b | c')."""
+        if KEYWORDS_PATTERN.match(text):
+            return True
+        if "|" in text:
+            parts = [p.strip() for p in text.split("|")]
+            return 3 <= len(parts) <= 12 and all(len(p.split()) <= 6 for p in parts if p)
+        return False
+
     def _pass6_abstract_detection(self, elements: list[DocElement]) -> None:
-        """Identify abstract paragraphs between front-matter and first heading."""
+        """Identify abstract paragraphs between front-matter and first heading.
+
+        The abstract ends at the keywords line when there is one: journals such
+        as PNAS put the introduction straight after the keywords with no
+        heading, and without this stop the whole introduction became abstract.
+        """
 
         # End of title / author zone
         front_matter_end = 0
@@ -486,8 +503,10 @@ class StructureDetectorAgent:
             # Skip very short lines unless abstract already started
             if len(text.split()) < 4 and not abstract_started:
                 continue
-            # Skip keywords lines
-            if KEYWORDS_PATTERN.match(text):
+            # Keywords end the abstract; what follows is body (introduction).
+            if self._looks_like_keywords(text):
+                if abstract_started:
+                    break
                 continue
 
             elem.role = ElementRole.ABSTRACT_BODY
@@ -511,11 +530,9 @@ class StructureDetectorAgent:
                 continue
 
             # Pipe-separated terms between front-matter and first heading
-            if elem.role in (ElementRole.UNKNOWN, ElementRole.ABSTRACT_BODY) and "|" in text:
-                parts = [p.strip() for p in text.split("|")]
-                if 3 <= len(parts) <= 12 and all(len(p.split()) <= 6 for p in parts if p):
-                    elem.role = ElementRole.KEYWORDS
-                    elem.role_confidence = 0.60
+            if elem.role in (ElementRole.UNKNOWN, ElementRole.ABSTRACT_BODY) and self._looks_like_keywords(text):
+                elem.role = ElementRole.KEYWORDS
+                elem.role_confidence = 0.60
 
     # ── Pass 7b: Figure / Table caption detection ────────────
 
@@ -528,8 +545,23 @@ class StructureDetectorAgent:
     )
 
     def _pass7b_caption_detection(self, elements: list[DocElement]) -> None:
-        """Detect figure and table captions (e.g. 'Fig. 1. …', 'Table 2. …')."""
-        for elem in elements:
+        """Detect figure and table captions (e.g. 'Fig. 1. …', 'Table 2. …').
+
+        In line-per-paragraph documents (PDF conversions) a caption spans
+        several lines; the continuation lines are claimed too, up to the first
+        line that ends a sentence and is visibly shorter than the column (the
+        same paragraph-end cue ParagraphMerger uses), so the whole caption
+        stays together instead of its tail becoming body text.
+        """
+        lengths = sorted(len(e.content.strip()) for e in elements
+                         if e.type == ElementType.PARAGRAPH and len(e.content.strip()) > 10)
+        median = lengths[len(lengths) // 2] if lengths else 0
+        fragmented = len(lengths) > 50 and median < 110
+
+        i = 0
+        while i < len(elements):
+            elem = elements[i]
+            i += 1
             if elem.type != ElementType.PARAGRAPH:
                 continue
             # Only reassign UNKNOWN or BODY (pass 8 hasn't run yet, so mostly UNKNOWN)
@@ -545,6 +577,29 @@ class StructureDetectorAgent:
             elif self._TABLE_CAPTION_RE.match(text):
                 elem.role = ElementRole.TABLE_CAPTION
                 elem.role_confidence = 0.85
+            else:
+                continue
+
+            if not fragmented:
+                continue
+            role = elem.role
+            prev = text
+            for _ in range(15):
+                if re.search(r"[.!?]\s*$", prev) and len(prev) < median * 0.82:
+                    break                      # short sentence-ending line: caption done
+                if i >= len(elements):
+                    break
+                nxt = elements[i]
+                cand = nxt.content.strip()
+                if (nxt.type != ElementType.PARAGRAPH or not cand
+                        or nxt.role not in (ElementRole.UNKNOWN, ElementRole.BODY)
+                        or self._FIGURE_CAPTION_RE.match(cand)
+                        or self._TABLE_CAPTION_RE.match(cand)):
+                    break
+                nxt.role = role
+                nxt.role_confidence = 0.60
+                prev = cand
+                i += 1
 
     # ── Pass 7c: Front-matter zone correction ────────────────
 
@@ -871,8 +926,14 @@ class StructureDetectorAgent:
                 _elem_idx, elem = batch[seq_idx]
                 try:
                     new_role = ElementRole(new_role_str)
-                    # Only apply if LLM is more confident than current
-                    if new_conf > elem.role_confidence or elem.role_confidence < 0.50:
+                    # The LLM only fills gaps the heuristics left: unknown
+                    # elements and weakly-labelled body text. It must not
+                    # overrule a heuristic label (author zone, keywords,
+                    # captions...) however confident it claims to be -- it
+                    # relabelled editorial front matter as body text that way.
+                    if elem.role == ElementRole.UNKNOWN or (
+                        elem.role == ElementRole.BODY and elem.role_confidence < 0.40
+                    ):
                         old_role = elem.role.value
                         elem.role = new_role
                         elem.role_confidence = new_conf
@@ -926,6 +987,28 @@ class StructureDetectorAgent:
                     position_start=m.start(),
                     position_end=m.end(),
                 ))
+
+            # ── Superscript numerals: survival^{1,2} ─────────
+            # PDF-to-DOCX keeps these as superscript runs, so the text alone
+            # ("survival 1,2.") gives no clue; look at the runs instead.
+            cursor = 0
+            for run in elem.runs:
+                if not run.text:
+                    continue
+                pos = elem.content.find(run.text, cursor)
+                if pos < 0:
+                    continue
+                cursor = pos + len(run.text)
+                sup = run.text.strip()
+                if run.superscript and SUPERSCRIPT_CITATION_RE.fullmatch(sup):
+                    citations.append(InTextCitation(
+                        text=sup,
+                        citation_type=CitationType.PARENTHETICAL,
+                        authors=[],
+                        year=None,
+                        position_start=pos,
+                        position_end=pos + len(run.text),
+                    ))
 
             # ── Author-date parenthetical: (Smith, 2023) ────
             for m in AUTHOR_DATE_PAREN_RE.finditer(elem.content):

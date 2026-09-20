@@ -3,10 +3,18 @@ import { authService } from '../services';
 
 // Auth session state (client state — stays in Zustand). All network I/O goes
 // through authService; errors arrive pre-normalized as { message, status }.
+// A stored token means a session check is about to run. Starting in 'loading'
+// keeps ProtectedRoute from redirecting to "/" on the very first render (it
+// renders before App's effect calls checkAuth), which sent every refresh and
+// deep link to the dashboard.
+const hasStoredToken = () => {
+    try { return Boolean(localStorage.getItem('token')); } catch { return false; }
+};
+
 const useAuthStore = create((set) => ({
     user: null,
     isAuthenticated: false,
-    status: 'idle', // 'idle' | 'loading' | 'error' | 'success'
+    status: hasStoredToken() ? 'loading' : 'idle', // 'idle' | 'loading' | 'error' | 'success'
     errorMessage: null,
 
     // Initialize state from a stored token.

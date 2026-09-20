@@ -8,6 +8,21 @@ import { ENDPOINTS, authHeaders } from '../config/api';
 
 const API_URL = ENDPOINTS.chatbot;
 
+// One conversation per browser tab: the server keys Dockyyy's memory by this
+// id, so without it every visitor shared one running conversation.
+function chatSessionId() {
+    try {
+        let id = sessionStorage.getItem('dockyyy-session');
+        if (!id) {
+            id = crypto.randomUUID();
+            sessionStorage.setItem('dockyyy-session', id);
+        }
+        return id;
+    } catch {
+        return undefined;
+    }
+}
+
 const ChatBot = () => {
     const [isHovered, setIsHovered] = useState(false);
     const [isOpen, setIsOpen] = useState(false);
@@ -55,7 +70,8 @@ const ChatBot = () => {
                 headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     query: userText,
-                    context: chatContext || undefined
+                    context: chatContext || undefined,
+                    session_id: chatSessionId(),
                 })
             });
 

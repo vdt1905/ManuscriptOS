@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -185,3 +185,7 @@ class FormatResult(BaseModel):
     structure_summary: dict = Field(default_factory=dict)  # role → count
     processing_time_seconds: float = 0.0
     error_message: Optional[str] = None
+    # The labelled, line-merged DocIR the formatter worked from. In-process
+    # only (the LaTeX builder reads it); never serialised.
+    docir: Optional[Any] = Field(default=None, exclude=True)
+    docir_raw: Optional[Any] = Field(default=None, exclude=True)

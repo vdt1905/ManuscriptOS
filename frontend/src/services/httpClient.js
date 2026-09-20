@@ -9,7 +9,7 @@
 // Services never touch axios directly; components/stores never touch axios at
 // all. This is the single place to add retry/timeout/refresh later.
 import axios from 'axios';
-import '../config/api'; // ensure the global auth interceptor is installed
+import { installSessionExpiryHandler } from '../config/api'; // also installs the global auth interceptor
 import { parseTolerant } from '../schemas';
 
 // A dedicated instance so per-app defaults (timeout) don't leak into the global
@@ -33,6 +33,7 @@ http.interceptors.request.use((cfg) => {
   }
   return cfg;
 });
+installSessionExpiryHandler(http);
 
 /**
  * Normalize any thrown value (axios error, network error, plain error) into a

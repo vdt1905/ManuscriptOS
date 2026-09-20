@@ -3,6 +3,7 @@
 // (chat / preview / library) are presentational components under ./advance-workshop/.
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { useLocation } from 'react-router-dom';
 import { ENDPOINTS } from '../config/api';
 import { useDocuments } from '../hooks/queries/useDocuments';
 import { useToast } from '../components/Toasts';
@@ -26,7 +27,10 @@ export function AdvanceWorkspace() {
             toast({ title: 'Could not load documents', description: 'Check your connection and try again.', variant: 'error' });
         }
     }, [docsError, toast]);
-    const [selectedFile, setSelectedFile] = useState(null);
+    // A document handed over from Deep Scan ("Open in AI Agent") starts selected.
+    const location = useLocation();
+    const handoff = location.state?.file ?? null;
+    const [selectedFile, setSelectedFile] = useState(handoff);
     const [uploading, setUploading] = useState(false);
     const [deleting, setDeleting] = useState(null);
 
@@ -43,7 +47,7 @@ export function AdvanceWorkspace() {
     const [isSending, setIsSending] = useState(false);
 
     const [previewHtml, setPreviewHtml] = useState(null);
-    const [previewLoading, setPreviewLoading] = useState(false);
+    const [previewLoading, setPreviewLoading] = useState(Boolean(handoff));
     const [previewError, setPreviewError] = useState(null);
 
     const chatScrollRef = useRef(null);
@@ -71,13 +75,18 @@ export function AdvanceWorkspace() {
         refreshPreview(filename);
     };
 
+    // Arriving from Deep Scan's "Open in AI Agent": select that document.
     /* ── Preview ── */
     const refreshPreview = async (name = selectedFile) => {
         if (!name) return;
         setPreviewLoading(true);
         setPreviewError(null);
+        await loadPreview(name);
+    };
+
+    const loadPreview = async (name) => {
         try {
-            const res = await axios.get(`${API_BASE}/documents/${name}/preview`, { responseType: 'text' });
+            const res = await axios.get(`${API_BASE}/documents/${encodeURIComponent(name)}/preview`, { responseType: 'text' });
             setPreviewHtml(res.data);
         } catch (e) {
             const detail = e.response?.data?.detail || e.response?.statusText || e.message;
@@ -86,6 +95,11 @@ export function AdvanceWorkspace() {
             setPreviewLoading(false);
         }
     };
+
+    // Load the preview of a handed-over document (selected in initial state).
+    useEffect(() => {
+        if (handoff) loadPreview(handoff);
+    }, [handoff]);
 
     /* ── Upload ── */
     const handleFileUpload = async (e) => {
@@ -109,8 +123,19 @@ export function AdvanceWorkspace() {
     };
 
     /* ── Download ── */
-    const handleDownload = () => {
-        if (selectedFile) window.location.href = `${API_BASE}/documents/${selectedFile}/download`;
+    const handleDownload = async () => {
+        if (!selectedFile) return;
+        // fetch rather than navigate: a plain navigation cannot send the auth
+        // header, and on failure it replaced the whole app with a JSON error page
+        try {
+            const res = await axios.get(`${API_BASE}/documents/${encodeURIComponent(selectedFile)}/download`, { responseType: 'blob' });
+            const url = URL.createObjectURL(res.data);
+            const a = document.createElement('a');
+            a.href = url; a.download = selectedFile; a.click();
+            URL.revokeObjectURL(url);
+        } catch (e) {
+            toast({ title: 'Download failed', description: e.response?.statusText || e.message, variant: 'error' });
+        }
     };
 
     /* ── Delete ── */
@@ -119,7 +144,7 @@ export function AdvanceWorkspace() {
         if (!window.confirm(`Delete "${filename}"?`)) return;
         setDeleting(filename);
         try {
-            await axios.delete(`${API_BASE}/documents/${filename}`);
+            await axios.delete(`${API_BASE}/documents/${encodeURIComponent(filename)}`);
             if (selectedFile === filename) {
                 setSelectedFile(null);
                 setPreviewHtml(null);

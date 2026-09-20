@@ -12,6 +12,7 @@ build/
 out/
 
 # Python dependencies
+.venv/
 venv/
 env/
 ENV/

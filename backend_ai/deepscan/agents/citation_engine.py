@@ -444,19 +444,21 @@ class CitationEngineAgent:
             style = CitationStylesStyle(style_path)
 
             # Build CSL-JSON source with unique IDs
+            # Keep a list, not a set: citeproc numbers entries in registration
+            # order, and a set would shuffle the bibliography on every run.
             csl_items = []
-            id_set: set[str] = set()
+            csl_ids: list[str] = []
             for i, pr in enumerate(parsed_refs):
                 csl_id = f"ref-{i}"
                 item = pr.to_csl_json(csl_id=csl_id)
                 csl_items.append(item)
-                id_set.add(csl_id)
+                csl_ids.append(csl_id)
 
             source = CiteProcJSON(csl_items)
             bib = CitationStylesBibliography(style, source, formatter.plain)
 
             # Register all citations so citeproc knows about them
-            for csl_id in id_set:
+            for csl_id in csl_ids:
                 cit = Citation([CitationItem(csl_id)])
                 bib.register(cit)
 

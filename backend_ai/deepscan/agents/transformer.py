@@ -556,6 +556,21 @@ class TransformerAgent:
     # ══════════════════════════════════════════════════════════
 
     @staticmethod
+    def _capitalize_word(w: str) -> str:
+        """Capitalise a word for title case without damaging identifiers.
+
+        str.capitalize() lowercases everything after the first letter, which
+        turns gene and strain names into nonsense (GrlA -> Grla, LEE1 -> Lee1).
+        Anything with an inner capital or a digit is left exactly as written;
+        hyphenated words are handled part by part (GrlA-dependent -> GrlA-Dependent).
+        """
+        if "-" in w and len(w) > 1:
+            return "-".join(TransformerAgent._capitalize_word(p) if p else p for p in w.split("-"))
+        if any(c.isupper() for c in w[1:]) or any(c.isdigit() for c in w):
+            return w
+        return w[:1].upper() + w[1:].lower()
+
+    @staticmethod
     def _apply_text_case(text: str, case: str) -> str:
         """Transform heading text to the specified case style."""
         if not text:
@@ -567,11 +582,7 @@ class TransformerAgent:
             result: list[str] = []
             for i, w in enumerate(words):
                 if i == 0 or i == len(words) - 1 or w.lower() not in _MINOR_WORDS:
-                    # Preserve ALL-CAPS abbreviations (DNA, RNA, EHEC, etc.)
-                    if w.isupper() and len(w) > 1:
-                        result.append(w)  # keep abbreviations as-is
-                    else:
-                        result.append(w.capitalize())
+                    result.append(TransformerAgent._capitalize_word(w))
                 else:
                     result.append(w.lower())
             return " ".join(result)
@@ -768,9 +779,13 @@ class TransformerAgent:
             else:
                 run.bold = False
                 run.italic = False
+        # Built outside the f-string: a backslash inside an f-string expression
+        # is a SyntaxError before Python 3.12, and both .venv and Docker run 3.11.
+        indent = 'indented 0.5"' if spec.abstract.keywords_indent else 'flush left'
+        prefix = 'italic prefix' if spec.abstract.keywords_italic else 'plain prefix'
         return [ChangeRecord(
             category="abstract",
-            description=f"Keywords: {'indented 0.5\"' if spec.abstract.keywords_indent else 'flush left'}, {'italic prefix' if spec.abstract.keywords_italic else 'plain prefix'}",
+            description=f"Keywords: {indent}, {prefix}",
             rule_reference=f"{spec.style_name} keywords formatting",
             status=ChangeStatus.APPLIED,
         )]

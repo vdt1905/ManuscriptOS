@@ -14,10 +14,13 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+
+from .latex_builder import Block, assemble, build_document, normalize_unicode
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +270,38 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
+# Seconds of silence after which the stream sends a heartbeat event. Keeps
+# proxies from dropping an idle connection and lets the client tell a busy
+# server apart from a dead one.
+HEARTBEAT_S = 5
+
+
+async def _progress_frames(task: asyncio.Future, stage: int, progress: asyncio.Queue | None = None):
+    """Yield SSE frames while *task* runs: each message put on *progress* as it
+    arrives, plus a heartbeat after every HEARTBEAT_S seconds of silence.
+    Returns once the task finishes; the caller then reads ``task.result()``."""
+    started = time.monotonic()
+    getter = None
+    try:
+        while True:
+            getter = asyncio.ensure_future(progress.get()) if progress is not None else None
+            waiting = {task, getter} if getter else {task}
+            done, _ = await asyncio.wait(waiting, timeout=HEARTBEAT_S, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield _sse({"stage": stage, "log": getter.result()})
+            if task in done:
+                break
+            if not done:
+                yield _sse({"stage": stage, "heartbeat": True,
+                            "elapsed_s": round(time.monotonic() - started)})
+    finally:
+        # A cancelled get() leaves any pending item in the queue, so nothing is lost.
+        if getter is not None and not getter.done():
+            getter.cancel()
+    while progress is not None and not progress.empty():
+        yield _sse({"stage": stage, "log": progress.get_nowait()})
+
+
 # ---------------------------------------------------------------------------
 # Chunked LaTeX helpers
 # ---------------------------------------------------------------------------
@@ -360,6 +395,77 @@ def _clean_chunk_latex(raw: str) -> str:
     text = re.sub(r"\\printbibliography", "", text)
     return text.strip()
 
+
+
+# ---------------------------------------------------------------------------
+# LLM polish of the deterministic conversion
+# ---------------------------------------------------------------------------
+
+_POLISH_MAX_WORDS = 650   # per model call; well inside what the model returns intact
+
+_POLISH_INSTRUCTIONS = (
+    "You polish LaTeX typography for a scientific manuscript.\n"
+    "You receive LaTeX body paragraphs. Return the same paragraphs with only these changes:\n"
+    "1. Mathematical expressions, variables and units in math mode ($...$).\n"
+    "2. Species names and gene names in \\textit{}.\n"
+    "3. Correct LaTeX for symbols (e.g. \\%, $\\pm$, $^{\\circ}$C).\n"
+    "RULES: keep every sentence, every word, every number and every \\cite{...} exactly. "
+    "Do not add, remove, reorder, paraphrase or summarize anything. "
+    "Never add \\textbf{}; do not italicize abbreviations such as EHEC, LEE or DNA. "
+    "Do not add headings, figures, tables, comments, \\documentclass, \\usepackage, "
+    "\\begin{document} or markdown fences. Output only the LaTeX."
+)
+
+
+def _polish_groups(blocks: list[Block], max_words: int) -> list[list[int]]:
+    """Indices of consecutive `para` blocks, grouped up to *max_words* words."""
+    groups: list[list[int]] = []
+    current: list[int] = []
+    words = 0
+    for i, blk in enumerate(blocks):
+        if blk.kind != "para" or not blk.latex:
+            if current:
+                groups.append(current)
+            current, words = [], 0
+            continue
+        if current and words + blk.words > max_words:
+            groups.append(current)
+            current, words = [], 0
+        current.append(i)
+        words += blk.words
+    if current:
+        groups.append(current)
+    return groups
+
+
+_POLISH_FORBIDDEN = ("\\section", "\\subsection", "\\begin{document}", "\\documentclass",
+                     "\\usepackage", "\\title{", "\\maketitle", "\\begin{abstract}",
+                     "\\bibitem", "[[FIGURE_", "\\begin{figure}", "```")
+
+
+def _polish_acceptable(src: str, out: str) -> tuple[bool, str]:
+    """Accept a polished group only if it is the same text in better LaTeX."""
+    from collections import Counter
+    from .agents.content_integrity import _normalize_words, delatex
+
+    if not out.strip():
+        return False, "empty output"
+    for token in _POLISH_FORBIDDEN:
+        if token in out:
+            return False, f"added {token.lstrip(chr(92))}"
+    if src.count("\\cite{") != out.count("\\cite{"):
+        return False, "citations changed"
+    src_words = _normalize_words(delatex(src))
+    out_words = _normalize_words(delatex(out))
+    if not src_words:
+        return True, ""
+    ratio = len(out_words) / len(src_words)
+    if ratio < 0.95 or ratio > 1.12:
+        return False, f"{int(ratio * 100)}% of the words"
+    missing = sum((Counter(src_words) - Counter(out_words)).values())
+    if missing / len(src_words) > 0.06:
+        return False, f"{missing} words lost"
+    return True, ""
 
 # ---------------------------------------------------------------------------
 # Style-specific LaTeX preamble builder
@@ -557,7 +663,7 @@ def _postprocess_latex(body: str, style: str) -> str:
 async def pipeline_stream(
     file: UploadFile = File(...),
     style: str = Form("apa7"),
-    model: str = Form("llama-3.3-70b-versatile"),
+    model: str = Form(os.getenv("LLM_MODEL", "openai/gpt-oss-120b")),
 ):
     """
     Full FormatForge pipeline via Server-Sent Events:
@@ -586,14 +692,30 @@ async def pipeline_stream(
             # ══════════════════════════════════════════════════════
             yield _sse({"stage": 1, "log": "🔧 Starting static formatting engine..."})
             yield _sse({"stage": 1, "log": f"Style: {style} | File: {file.filename}"})
-            await asyncio.sleep(0.05)
 
-            from .agents.orchestrator import Orchestrator
+            # All of stage 1 is blocking work, so it runs in worker threads while
+            # this generator streams each step as it starts, plus heartbeats.
+            # Loading the agents (several seconds on first use) happens off the
+            # event loop too.
+            loop = asyncio.get_running_loop()
+            progress: asyncio.Queue = asyncio.Queue()
 
-            yield _sse({"stage": 1, "log": "Step 1/6 — Ingesting document..."})
-            orchestrator = Orchestrator()
+            def on_step(message: str) -> None:  # called from the worker thread
+                loop.call_soon_threadsafe(progress.put_nowait, message)
 
-            result = await orchestrator.run(input_path=tmp_path, style_id=style)
+            def load_orchestrator():
+                from .agents.orchestrator import Orchestrator
+                return Orchestrator()
+
+            async def run_stage1():
+                orchestrator = await asyncio.to_thread(load_orchestrator)
+                return await orchestrator.run(input_path=tmp_path, style_id=style, on_step=on_step)
+
+            on_step("Loading formatting agents...")
+            stage1 = asyncio.ensure_future(run_stage1())
+            async for frame in _progress_frames(stage1, stage=1, progress=progress):
+                yield frame
+            result = stage1.result()
 
             if not result.success:
                 yield _sse({"error": f"Static formatting failed: {result.error_message}"})
@@ -601,16 +723,9 @@ async def pipeline_stream(
 
             formatted_path = Path(result.output_filename)
 
-            yield _sse({"stage": 1, "log": "Step 2/6 — Style spec loaded"})
-            yield _sse({"stage": 1, "log": "Step 3/6 — Document structure detected"})
-
             if result.structure_summary:
                 summary_str = ", ".join(f"{k}: {v}" for k, v in result.structure_summary.items())
                 yield _sse({"stage": 1, "log": f"Structure: {summary_str}"})
-
-            yield _sse({"stage": 1, "log": "Step 4/6 — Citations processed"})
-            yield _sse({"stage": 1, "log": "Step 5/6 — Formatting applied"})
-            yield _sse({"stage": 1, "log": "Step 6/6 — Compliance validated"})
 
             if result.compliance_report:
                 cr = result.compliance_report
@@ -629,36 +744,19 @@ async def pipeline_stream(
                 "stage_complete": 1,
             })
 
-            # Copy formatted file to the DocBot documents directory for agent editing.
-            try:
-                docs_dir = Path(
-                    os.getenv("DOCUMENTS_DIR")
-                    or (Path(__file__).resolve().parent.parent / "data" / "documents_store")
-                )
-                docs_dir.mkdir(parents=True, exist_ok=True)
-                dest = docs_dir / formatted_path.name
-                shutil.copy2(str(formatted_path), str(dest))
-                yield _sse({"stage": 1, "log": f"📂 Copied to agent documents: {formatted_path.name}"})
-            except Exception as copy_err:
-                logger.warning(f"Could not copy to DocBot documents: {copy_err}")
+            # The AI document agent gets the DOCX made from the final LaTeX
+            # (POST /api/v2/latex-to-docx, called by the Agent step), not this
+            # stage-1 restyle of the source file.
 
             # ══════════════════════════════════════════════════════
-            # STAGE 2 — LLM LaTeX Generation (Chunked)
+            # STAGE 2 — LaTeX generation
             # ══════════════════════════════════════════════════════
-
-            if not _AGNO_READY or not api_key:
-                yield _sse({
-                    "stage": 2,
-                    "log": "⚠️ LLM LaTeX generation skipped (Agno/Groq not available).",
-                    "is_final": True,
-                    "latex": "",
-                    "formatted_file": formatted_path.name if formatted_path else None,
-                })
-                return
-
-            yield _sse({"stage": 2, "log": "🧠 Starting LLM-based LaTeX generation..."})
-            await asyncio.sleep(0.05)
-
+            # The document is built deterministically from the labelled DocIR
+            # (every heading, paragraph, caption, citation and reference lands
+            # where stage 1 found it). The LLM then only polishes paragraph
+            # groups, and each polished group is kept only if it preserves the
+            # text; otherwise the deterministic version stays.
+            yield _sse({"stage": 2, "log": "🧠 Starting LaTeX generation..."})
             yield _sse({"stage": 2, "log": "Extracting text and figures from formatted document..."})
 
             # Per-job assets dir alongside the formatted DOCX (served via /assets).
@@ -685,111 +783,78 @@ async def pipeline_stream(
             if skipped_imgs:
                 yield _sse({"stage": 2, "log": f"⚠ {skipped_imgs} image(s) in an unsupported format (e.g. EMF/WMF) were skipped."})
 
-            # ── Split into sections for chunked generation ──
-            sections = _split_into_sections(formatted_text)
-            yield _sse({"stage": 2, "log": f"Split document into {len(sections)} sections for chunked LaTeX generation."})
+            docir = getattr(result, "docir", None)
+            if docir is None:
+                yield _sse({"error": "Internal error: the formatting stage returned no document structure."})
+                return
 
-            latex_agent = Agent(
-                name="LaTeXConverterAgent",
-                model=AgnoGroq(id=model, api_key=api_key),
-                instructions=(
-                    f"You are an expert LaTeX code generator for {style.upper()} academic manuscripts.\n"
-                    f"You will receive ONE SECTION of a manuscript at a time.\n"
-                    f"Convert it into LaTeX body content ONLY.\n\n"
-                    f"RULES:\n"
-                    f"1. Output ONLY LaTeX body content — NO \\documentclass, NO \\usepackage, NO \\begin{{document}}, NO \\end{{document}}.\n"
-                    f"2. Use \\section{{}}, \\subsection{{}}, \\subsubsection{{}} for headings.\n"
-                    f"3. Convert citations to \\cite{{author_year}} format.\n"
-                    f"4. Preserve EVERY paragraph, EVERY sentence, EVERY detail. Do NOT summarize.\n"
-                    f"5. For TABLE descriptions, use \\begin{{table}}[H]...\\end{{table}}.\n"
-                    f"6. FIGURES: the text contains placeholder tokens like [[FIGURE_1]], [[FIGURE_2]]. "
-                    f"Keep every such token EXACTLY as-is, on its own line, where it appears. "
-                    f"Do NOT create \\begin{{figure}} or \\includegraphics yourself — the tokens are replaced automatically.\n"
-                    f"7. Use proper LaTeX for math: $...$ for inline, $$...$$ for display.\n"
-                    f"8. Use \\textit{{}} for species names, \\textbf{{}} for emphasis.\n"
-                    f"9. Return ONLY raw LaTeX code. NO markdown fences. NO explanations.\n"
-                    f"10. Do NOT skip or truncate ANY content. Every word matters.\n"
-                ),
-                markdown=False,
-            )
+            built = build_document(docir, style, raw_docir=getattr(result, "docir_raw", None))
+            for f in figures:
+                cap = built.captions.get(f["number"])
+                if cap:
+                    f["caption"] = cap
+            n_sections = sum(1 for blk in built.blocks if blk.kind == "section")
+            n_paras = sum(1 for blk in built.blocks if blk.kind == "para")
+            n_cites = built.body().count("\\cite{") + built.abstract.count("\\cite{")
+            yield _sse({
+                "stage": 2,
+                "log": f"Built document: {n_sections} headings, {n_paras} paragraphs, "
+                       f"{built.ref_count} references, {n_cites} citations linked.",
+            })
 
-            # ── Generate LaTeX for each section ──
-            body_parts: list[str] = []
-            preamble_section = None
+            # ── LLM polish, paragraph group by paragraph group ──
+            if not _AGNO_READY or not api_key:
+                yield _sse({"stage": 2, "log": "⚠️ LLM polish skipped (Agno/Groq not available) — using the structural conversion as is."})
+            else:
+                groups = _polish_groups(built.blocks, max_words=_POLISH_MAX_WORDS)
+                polish_agent = Agent(
+                    name="LaTeXPolishAgent",
+                    model=AgnoGroq(id=model, api_key=api_key),
+                    instructions=_POLISH_INSTRUCTIONS,
+                    markdown=False,
+                )
+                kept = 0
+                for gi, group in enumerate(groups):
+                    words = sum(built.blocks[i].words for i in group)
+                    yield _sse({"stage": 2, "log": f"Polishing paragraph group {gi + 1}/{len(groups)} ({words} words)..."})
+                    src_latex = "\n\n".join(built.blocks[i].latex for i in group)
+                    prompt = f"--- LATEX ---\n{src_latex}\n--- END ---\n"
+                    task = asyncio.ensure_future(asyncio.to_thread(polish_agent.run, prompt))
+                    async for frame in _progress_frames(task, stage=2):
+                        yield frame
+                    try:
+                        polished = normalize_unicode(_clean_chunk_latex(task.result().content or ""))
+                    except Exception as e:
+                        logger.warning("Polish group %d failed: %s", gi + 1, e)
+                        yield _sse({"stage": 2, "log": f"  ⚠ Group {gi + 1}: model error ({str(e)[:60]}), keeping structural version"})
+                        continue
+                    # The model sometimes bolds phrases despite the instructions;
+                    # bold that was not in the source is not typography, drop it.
+                    if "\\textbf{" in polished and "\\textbf{" not in src_latex:
+                        polished = re.sub(r"\\textbf\{([^{}]*)\}", r"\1", polished)
+                    ok, why = _polish_acceptable(src_latex, polished)
+                    if ok:
+                        built.blocks[group[0]].latex = polished
+                        for i in group[1:]:
+                            built.blocks[i].latex = ""
+                        kept += 1
+                        yield _sse({"stage": 2, "log": f"  ✓ Group {gi + 1} polished"})
+                    else:
+                        yield _sse({"stage": 2, "log": f"  ↩ Group {gi + 1}: model output rejected ({why}), keeping structural version"})
+                    await asyncio.sleep(0.1)  # Rate limit between Groq calls
+                yield _sse({"stage": 2, "log": f"Polish accepted for {kept}/{len(groups)} paragraph groups."})
 
-            for idx, section in enumerate(sections):
-                sec_title = section["title"]
-                sec_content = section["content"]
-                sec_words = len(sec_content.split())
-
-                yield _sse({"stage": 2, "log": f"Chunk {idx+1}/{len(sections)}: {sec_title} ({sec_words} words)..."})
-
-                # For the first section (Preamble), generate title/author/abstract
-                if idx == 0 and sec_title == "Preamble":
-                    chunk_prompt = (
-                        f"Convert this manuscript header section into LaTeX code.\n"
-                        f"Include: \\title{{}}, \\author{{}}, \\maketitle, and \\begin{{abstract}}...\\end{{abstract}} if abstract is present.\n"
-                        f"Do NOT output \\documentclass or \\usepackage or \\begin{{document}}.\n"
-                        f"Preserve ALL text exactly.\n\n"
-                        f"--- SECTION ---\n{sec_content}\n--- END ---\n"
-                    )
-                elif "reference" in sec_title.lower():
-                    chunk_prompt = (
-                        f"Convert this references section into LaTeX \\begin{{thebibliography}} format.\n"
-                        f"Use \\bibitem{{key}} for each reference. Preserve ALL references.\n"
-                        f"Do NOT output \\documentclass or \\usepackage.\n\n"
-                        f"--- REFERENCES ---\n{sec_content}\n--- END ---\n"
-                    )
-                else:
-                    chunk_prompt = (
-                        f"Convert this section into LaTeX body content.\n"
-                        f"Section heading: {sec_title}\n"
-                        f"Use \\section{{{sec_title}}} at the start (unless already a subsection).\n"
-                        f"Do NOT output \\documentclass, \\usepackage, \\begin{{document}}, or \\end{{document}}.\n"
-                        f"Preserve EVERY paragraph exactly. Do NOT summarize or skip.\n\n"
-                        f"--- SECTION ---\n{sec_content}\n--- END ---\n"
-                    )
-
-                try:
-                    chunk_result = await asyncio.to_thread(latex_agent.run, chunk_prompt)
-                    chunk_latex = _clean_chunk_latex(chunk_result.content)
-                    body_parts.append(chunk_latex)
-                    yield _sse({"stage": 2, "log": f"  ✓ Chunk {idx+1} complete ({len(chunk_latex)} chars)"})
-                except Exception as e:
-                    logger.warning(f"Chunk {idx+1} ({sec_title}) failed: {e}")
-                    yield _sse({"stage": 2, "log": f"  ⚠ Chunk {idx+1} failed: {str(e)[:80]}, using raw text fallback"})
-                    # Fallback: wrap raw text in LaTeX
-                    escaped = sec_content.replace("&", "\\&").replace("%", "\\%").replace("#", "\\#").replace("_", "\\_")
-                    body_parts.append(f"\\section{{{sec_title}}}\n\n{escaped}")
-
-                await asyncio.sleep(0.1)  # Rate limit between Groq calls
-
-            # ── Assemble final LaTeX document ──
-            yield _sse({"stage": 2, "log": "Assembling final LaTeX document from all chunks..."})
-
-            merged_body = "\n\n".join(body_parts)
-
-            # Post-process: fix LLM mistakes (empty abstracts, markdown, duplicates)
-            yield _sse({"stage": 2, "log": "Post-processing LaTeX (fixing LLM artifacts)..."})
-            merged_body = _postprocess_latex(merged_body, style)
-
-            # Deterministically replace [[FIGURE_n]] sentinels with real figure
-            # floats; re-append any the LLM dropped so no figure is ever lost.
+            # ── Assemble ──
+            yield _sse({"stage": 2, "log": "Assembling final LaTeX document..."})
+            body_latex = built.body()
             if figures:
                 yield _sse({"stage": 2, "log": f"Embedding {len(figures)} figure(s) into LaTeX..."})
-            merged_body = _inject_figures(merged_body, figures)
+            body_latex = _inject_figures(body_latex, figures)
 
-            # Style-specific preamble (+ graphicspath so assets/ resolves).
             preamble = _build_preamble(style)
             if figures:
                 preamble = f"{preamble}\\graphicspath{{{{assets/}}}}\n"
-
-            merged_latex = (
-                f"{preamble}\n"
-                "\\begin{document}\n\n"
-                f"{merged_body}\n\n"
-                "\\end{document}\n"
-            )
+            merged_latex = assemble(built, preamble, style, body=body_latex)
 
             yield _sse({"stage": 2, "log": f"✅ LaTeX generation complete! ({len(merged_latex)} chars, {len(merged_latex.split(chr(10)))} lines)"})
 
@@ -868,11 +933,12 @@ async def pipeline_stream(
 
 @agno_router.get("/api/v2/download/{filename}")
 async def download_formatted(filename: str):
-    """Download the statically formatted .docx file."""
+    """Download a .docx from the output folder (stage-1 or LaTeX-derived)."""
     from .config import OUTPUT_FORMATTED_DIR
 
     file_path = OUTPUT_FORMATTED_DIR / filename
-    if not file_path.exists():
+    # bare file names only (a backslash would be a path separator on Windows)
+    if Path(filename).name != filename or "\\" in filename or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(
         str(file_path),
@@ -1027,6 +1093,51 @@ async def compile_latex_endpoint(req: CompileRequest):
             "log": result.log[:12000],
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Final LaTeX -> DOCX (the document the Agent step shows and the AI agent edits)
+# ---------------------------------------------------------------------------
+
+class ToDocxRequest(BaseModel):
+    latex: str
+    job: str | None = None      # formatted-file stem -> figure assets dir
+    style: str = "ieee"
+    name: str | None = None     # original upload name, for a readable file name
+
+
+@agno_router.post("/api/v2/latex-to-docx")
+async def latex_to_docx_endpoint(req: ToDocxRequest):
+    """Convert the current (possibly user-edited) LaTeX into a DOCX styled
+    like the compiled PDF, and hand it to the AI document agent."""
+    from .config import OUTPUT_FORMATTED_DIR
+    from .latex_to_docx import latex_to_docx
+
+    if not req.latex or not req.latex.strip():
+        raise HTTPException(status_code=400, detail="LaTeX source is required.")
+
+    assets_dir = None
+    if req.job and ".." not in req.job and "/" not in req.job and "\\" not in req.job:
+        candidate = OUTPUT_FORMATTED_DIR / f"{req.job}_assets"
+        if candidate.is_dir():
+            assets_dir = candidate
+
+    style = re.sub(r"[^a-z0-9]", "", (req.style or "ieee").lower()) or "ieee"
+    base = re.sub(r"[^A-Za-z0-9 _().-]", "_", Path(req.name or "document").stem).strip(" .") or "document"
+    filename = f"{base} ({style.upper()}).docx"
+    out_path = OUTPUT_FORMATTED_DIR / filename
+
+    try:
+        await asyncio.to_thread(latex_to_docx, req.latex, style, out_path, assets_dir)
+    except Exception as e:  # pandoc missing, or LaTeX pandoc cannot read
+        logger.exception("LaTeX -> DOCX failed")
+        raise HTTPException(status_code=422, detail=f"Could not convert the LaTeX to DOCX: {e}")
+
+    docs_dir = Path(os.getenv("DOCUMENTS_DIR")
+                    or (Path(__file__).resolve().parent.parent / "data" / "documents_store"))
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(out_path), str(docs_dir / filename))
+    return {"filename": filename}
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ import { EmptyState } from './project-workspace/EmptyState';
 
 const API_URL = ENDPOINTS.projects;
 
-export function ProjectWorkspace() {
+function ProjectWorkspaceInner() {
     const latexPreviewRef = useRef(null);
     const { id } = useParams();
     const navigate = useNavigate();
@@ -46,7 +46,13 @@ export function ProjectWorkspace() {
     const renameProject = useRenameProject();
     const deleteProject = useDeleteProject();
     const { toast, confirm } = useToast();
-    const { setDeepScanProjectId, setDeepScanSourceFileName } = useAppStore();
+    const { setDeepScanProjectId, setDeepScanSourceFileName, setChatContext } = useAppStore();
+
+    // Dockyyy (the chat bot) silently reads the document that is open here.
+    useEffect(() => {
+        setChatContext(localContent);
+        return () => setChatContext('');
+    }, [localContent, setChatContext]);
     const fileInputRef = useRef(null);
     const saveTimeoutRef = useRef(null);
 
@@ -54,10 +60,11 @@ export function ProjectWorkspace() {
     const latexEditorRef = useRef(null);
     const [latexCompiling, setLatexCompiling] = useState(false);
     const [latexCompiled, setLatexCompiled] = useState(false);
-    const [latexAssets, setLatexAssets] = useState([]);
+    const [dirty, setDirty] = useState(false);   // edits the server hasn't got yet
+    const pendingRef = useRef(null);              // { id, fileId, content } waiting for the autosave timer
     const [latexOutline, setLatexOutline] = useState([]);
 
-    const fetchProject = async () => {
+    const fetchProject = async ({ selectFirst = false } = {}) => {
         try {
             const token = localStorage.getItem('token');
             const res = await axios.get(`${API_URL}/${id}`, {
@@ -65,7 +72,7 @@ export function ProjectWorkspace() {
             });
             setProject(res.data);
             recordVisit(res.data);
-            if (res.data.files?.length > 0 && !activeFileId) {
+            if (res.data.files?.length > 0 && selectFirst) {
                 setActiveFileId(res.data.files[0]._id);
             }
         } catch (error) {
@@ -76,9 +83,23 @@ export function ProjectWorkspace() {
     };
 
     useEffect(() => {
-        fetchProject();
-        return () => clearTimeout(saveTimeoutRef.current);
-    }, [id]);
+        // A file passed via navigation state is already selected; otherwise
+        // open the project's first file.
+        fetchProject({ selectFirst: !location.state?.activeFileId });
+
+        return () => {
+            clearTimeout(saveTimeoutRef.current);
+            // Flush an autosave that was still counting down, so the last
+            // couple of seconds of typing survive navigating away.
+            const pending = pendingRef.current;
+            if (pending) {
+                pendingRef.current = null;
+                axios.put(`${API_URL}/${pending.id}/files/${pending.fileId}`, { content: pending.content }, {
+                    headers: authHeaders(),
+                }).catch(() => { /* nothing sensible to show after leaving the page */ });
+            }
+        };
+    }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const activeFile = project?.files?.find(f => f._id === activeFileId);
 
@@ -122,6 +143,7 @@ export function ProjectWorkspace() {
                 const updatedFiles = prev.files.map(f => f._id === activeFileId ? { ...f, content: contentToSave } : f);
                 return { ...prev, files: updatedFiles };
             });
+            if (!pendingRef.current) setDirty(false);
         } catch (error) {
             toast({ title: 'Save Failed', description: 'Could not sync changes to server.', variant: 'error' });
         } finally {
@@ -131,9 +153,12 @@ export function ProjectWorkspace() {
 
     const handleEditorChange = (value) => {
         setLocalContent(value || '');
+        setDirty(true);
+        pendingRef.current = { id, fileId: activeFileId, content: value || '' };
         // Auto-save debounce (2 seconds)
         if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
         saveTimeoutRef.current = setTimeout(() => {
+            pendingRef.current = null;
             handleSaveContent(value || '');
         }, 2000);
     };
@@ -293,14 +318,6 @@ ${trimmed}
 \\end{document}`;
     }, []);
 
-    const handleLatexAssetUpload = (e) => {
-        if (e.target.files && e.target.files.length > 0) {
-            const newFiles = Array.from(e.target.files);
-            setLatexAssets(prev => { const existing = new Set(prev.map(f => f.name)); return [...prev, ...newFiles.filter(f => !existing.has(f.name))]; });
-        }
-        e.target.value = '';
-    };
-
     // Format this document via the Deep Scan engine (the single document→LaTeX flow).
     const handleFormatInDeepScan = () => {
         setDeepScanProjectId(id);
@@ -324,7 +341,8 @@ ${trimmed}
                 let errorMessage = "Compilation failed";
                 try {
                     const data = await response.json();
-                    errorMessage = data?.error || data?.message || errorMessage;
+                    // the tectonic log is the actionable part of a 422
+                    errorMessage = data?.log || data?.error || data?.message || errorMessage;
                 } catch {
                     errorMessage = await response.text();
                 }
@@ -419,7 +437,9 @@ ${trimmed}
                                 </button>
                             </div>
                             <div className="flex items-center gap-2 text-xs font-bold text-[var(--color-text-muted)]">
-                                {saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : <><Save className="w-4 h-4 text-green-600" /> Saved</>}
+                                {saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</>
+                                    : dirty ? <><Save className="w-4 h-4 text-amber-500" /> Unsaved changes</>
+                                        : <><Save className="w-4 h-4 text-green-600" /> Saved</>}
                             </div>
                         </div>
 
@@ -439,9 +459,6 @@ ${trimmed}
                                     latexOutline={latexOutline}
                                     latexEditorRef={latexEditorRef}
                                     latexPreviewRef={latexPreviewRef}
-                                    latexAssets={latexAssets}
-                                    setLatexAssets={setLatexAssets}
-                                    onAssetUpload={handleLatexAssetUpload}
                                     latexCompiling={latexCompiling}
                                     latexCompiled={latexCompiled}
                                 />
@@ -498,6 +515,14 @@ ${trimmed}
             </div>
         </div>
     );
+}
+
+// Keyed by project id: /project/A -> /project/B is the same route, so without
+// a remount B inherited A's file selection (an id B doesn't have) and showed
+// an empty editor.
+export function ProjectWorkspace() {
+    const { id } = useParams();
+    return <ProjectWorkspaceInner key={id} />;
 }
 
 export default ProjectWorkspace;

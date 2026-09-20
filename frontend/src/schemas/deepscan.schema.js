@@ -16,7 +16,14 @@ export const integrityReportSchema = z
   .object({
     passed: z.boolean().optional(),
     severity: z.string().optional(),
-    word_retention: z.number().optional(),
+    // field names as ContentIntegrityReport emits them
+    word_retention_ratio: z.number().optional(),
+    word_count_in: z.number().optional(),
+    word_count_out: z.number().optional(),
+    figure_count_in: z.number().optional(),
+    figure_count_out: z.number().optional(),
+    table_count_in: z.number().optional(),
+    table_count_out: z.number().optional(),
     token_similarity: z.number().optional(),
     notes: z.array(z.string()).optional(),
   })

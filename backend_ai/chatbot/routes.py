@@ -7,9 +7,10 @@ markdown → LaTeX) was removed: the DeepScan / FormatForge engine (/deepscan) i
 now the single document→LaTeX path. See the productionization plan.
 """
 
+import asyncio
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from typing import Optional
 
@@ -153,7 +154,7 @@ def get_known_limitations() -> str:
 # ---------------------------------------------------------------------------
 dockyyy = Agent(
     name="Dockyyy",
-    model=Groq(id="llama-3.3-70b-versatile"),
+    model=Groq(id=os.getenv("LLM_MODEL", "openai/gpt-oss-120b")),
     tools=[
         get_tool_catalog,
         check_conference_support,
@@ -219,6 +220,7 @@ IMPORTANT RULES:
 class QueryRequest(BaseModel):
     query: str
     context: Optional[str] = None
+    session_id: Optional[str] = None   # per browser tab, so chats don't mix
 
 
 class QueryResponse(BaseModel):
@@ -229,12 +231,23 @@ class QueryResponse(BaseModel):
 # Endpoint
 # ---------------------------------------------------------------------------
 @router.post("/api/v2/ask", response_model=QueryResponse)
-async def ask_dockyyy(req: QueryRequest):
+async def ask_dockyyy(req: QueryRequest, request: Request):
     # Build the prompt — inject context if provided
     if req.context:
         prompt = f"Context:\n{req.context}\n\nUser Query:\n{req.query}"
     else:
         prompt = req.query
 
-    result = dockyyy.run(prompt)
-    return QueryResponse(response=result.content)
+    # One conversation per user + tab. Without these, agno keeps a single
+    # sticky session on the agent and replays one user's last turns
+    # (including their manuscript context) into everyone else's prompts.
+    claims = getattr(request.state, "user", None) or {}
+    user_id = str(claims.get("userId") or "anonymous")
+    session_id = req.session_id or f"{user_id}-default"
+
+    # The model call (plus any web search) takes seconds: keep it off the
+    # event loop so streams and other requests keep flowing meanwhile.
+    result = await asyncio.to_thread(
+        dockyyy.run, prompt, user_id=user_id, session_id=session_id,
+    )
+    return QueryResponse(response=result.content or "")

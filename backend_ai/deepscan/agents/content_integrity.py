@@ -59,6 +59,11 @@ def _strip_reference_section(text: str) -> str:
         r"(?im)^\s*(references|bibliography|works cited|literature cited)\s*$",
         text,
     )
+    if m:
+        return text[: m.start()]
+    # No heading (e.g. the formatter numbered the list without a label):
+    # cut where a numbered list "[1] ..." / "1. ..." followed by "[2] ..." begins.
+    m = re.search(r"(?m)^\s*\[?1[\]\.\)]\s*\S[^\n]*\n\s*\[?2[\]\.\)]\s", text)
     return text[: m.start()] if m else text
 
 
@@ -85,11 +90,17 @@ def delatex(src: str) -> str:
     # 2. Remove comments (unescaped %).
     text = re.sub(r"(?<!\\)%.*", "", text)
 
-    # 3. Drop non-prose environments entirely (contents aren't manuscript prose).
+    # 3. Drop non-prose environments entirely (contents aren't manuscript prose)
+    #    -- except their captions, which are prose from the manuscript and
+    #    would otherwise count as lost words.
+    def _keep_caption(m: re.Match) -> str:
+        caps = re.findall(r"\\caption\{((?:[^{}]|\{[^{}]*\})*)\}", m.group(0))
+        return " " + " ".join(caps) + " " if caps else " "
+
     for env in _DROP_ENVS:
         text = re.sub(
             r"\\begin\{" + env + r"\*?\}.*?\\end\{" + env + r"\*?\}",
-            " ",
+            _keep_caption,   # caption stays where the float was, so word order is kept
             text,
             flags=re.DOTALL,
         )
@@ -190,7 +201,9 @@ def validate_content_preservation(
         # ── Token-sequence similarity ──
         if in_words or out_words:
             report.token_similarity = round(
-                difflib.SequenceMatcher(None, in_words, out_words).ratio(), 3
+                # autojunk=False: the default discounts frequent tokens on long
+                # inputs and dragged a fully-preserved paper down to ~60%.
+                difflib.SequenceMatcher(None, in_words, out_words, autojunk=False).ratio(), 3
             )
 
         severities: list[Severity] = []

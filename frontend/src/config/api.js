@@ -88,6 +88,28 @@ function _installAxiosInterceptor() {
     }
     return cfg;
   });
+  installSessionExpiryHandler(axios);
+}
+
+/**
+ * A 401 on any authenticated call means the stored token is no longer valid
+ * (expired, or the server's secret changed). Drop it and send the user to the
+ * login page instead of leaving them "logged in" with every request failing.
+ * Login/signup 401s are the user's own bad credentials and are left alone.
+ */
+export function installSessionExpiryHandler(instance) {
+  instance.interceptors.response.use(
+    (res) => res,
+    (error) => {
+      const url = error?.config?.url || '';
+      const isAuthCall = url.includes('/api/auth/login') || url.includes('/api/auth/signup');
+      if (error?.response?.status === 401 && !isAuthCall && getAuthToken()) {
+        try { localStorage.removeItem('token'); } catch { /* ignore */ }
+        if (window.location.pathname !== '/') window.location.assign('/');
+      }
+      return Promise.reject(error);
+    },
+  );
 }
 _installAxiosInterceptor();
 

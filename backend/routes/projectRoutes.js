@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import {
     createProject,
     getUserProjects,
@@ -20,6 +21,15 @@ const router = express.Router();
 
 // Apply auth middleware to all project routes
 router.use(protectRoute);
+
+// A malformed id makes Mongoose throw a CastError, which the controllers
+// report as a 500; answer 404 up front instead (stale bookmarks, typos).
+const rejectInvalidId = (req, res, next, value) =>
+    mongoose.Types.ObjectId.isValid(value)
+        ? next()
+        : res.status(404).json({ error: 'Not found' });
+router.param('id', rejectInvalidId);
+router.param('fileId', rejectInvalidId);
 
 router.post('/', createProject);
 router.get('/', getUserProjects);

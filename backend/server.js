@@ -1,12 +1,10 @@
+import './config/env.js'; // must be first: loads .env before other imports read it
 import express from 'express';
-import dotenv from 'dotenv';
 import cors from 'cors';
 
 import { connectDB } from './db/connectDB.js';
 import authRoutes from './routes/authRoutes.js';
 import projectRoutes from './routes/projectRoutes.js';
-
-dotenv.config();
 
 const app = express();
 

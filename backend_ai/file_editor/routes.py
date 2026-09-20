@@ -28,6 +28,8 @@ from typing import Optional
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
+# python-docx raises this (not BadZipFile) for a file that is not a real .docx
+from docx.opc.exceptions import PackageNotFoundError
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
@@ -55,6 +57,7 @@ if _ENV_FILE.exists():
 # legacy default (relative "documents_store") when run standalone.
 DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR") or "documents_store").resolve()
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # matches nginx client_max_body_size
 os.environ["DOCUMENTS_DIR"] = str(DOCUMENTS_DIR)
 
 
@@ -662,7 +665,7 @@ try:
     )
     agent_db = SqliteDb(db_file=_DB_FILE)
 
-    AGENT_MODEL = Groq(id="llama-3.3-70b-versatile")
+    AGENT_MODEL = Groq(id=os.getenv("LLM_MODEL", "openai/gpt-oss-120b"))
 
     AGENT_INSTRUCTION = """\
 You are **DocBot**, an intelligent Document Editor Agent for .docx files.
@@ -895,6 +898,7 @@ class ChatRequest(BaseModel):
     message: str
     user_id: str = "default_user"
     session_id: str | None = None
+    document: str | None = None   # filename the user currently has open
 
 class ChatResponse(BaseModel):
     response: str
@@ -1010,7 +1014,8 @@ async def chat(req: ChatRequest):
             log.info(f"Generating agent response (Attempt {attempt}/{MAX_RETRIES})...")
             start_time = time.time()
             run_output = await root_agent.arun(
-                input=req.message,
+                input=(f"[Working on file: {req.document}]\n{req.message}"
+                       if req.document else req.message),
                 user_id=user_id,
                 session_id=session_id,
             )
@@ -1128,8 +1133,21 @@ async def api_upload_document(file: UploadFile = File(...)):
     if not file.filename or not file.filename.endswith(".docx"):
         raise HTTPException(status_code=400, detail="Only .docx files are accepted.")
     dest = DOCUMENTS_DIR / Path(file.filename).name
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+
+    def _write_bounded() -> None:
+        written = 0
+        with open(dest, "wb") as f:
+            while chunk := file.file.read(1 << 20):
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="File too large (limit 50 MB).")
+                f.write(chunk)
+
+    try:
+        await asyncio.to_thread(_write_bounded)   # off the event loop, with a size ceiling
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
     # Validate the uploaded file is a real docx
     try:
         Document(str(dest))
@@ -1146,7 +1164,7 @@ async def api_get_document_info(filename: str):
         doc = _load(filename)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Document '{filename}' not found.")
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, PackageNotFoundError):
         raise HTTPException(status_code=422, detail=f"Document '{filename}' is corrupted and cannot be opened.")
     paras = doc.paragraphs
     word_count = sum(len(p.text.split()) for p in paras)
@@ -1177,7 +1195,7 @@ async def api_get_document_content(filename: str, start: int = 0, limit: int = 1
         doc = _load(filename)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Document '{filename}' not found.")
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, PackageNotFoundError):
         raise HTTPException(status_code=422, detail=f"Document '{filename}' is corrupted and cannot be read.")
     paras = doc.paragraphs
     total = len(paras)
@@ -1199,7 +1217,7 @@ async def api_get_document_preview(filename: str):
         doc = _load(filename)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Document '{filename}' not found.")
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, PackageNotFoundError):
         raise HTTPException(status_code=422, detail=f"Document '{filename}' is corrupted and cannot be previewed.")
     return _docx_to_html(doc)
 
@@ -1211,7 +1229,7 @@ async def api_get_document_snapshot(filename: str):
         doc = _load(filename)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Document '{filename}' not found.")
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, PackageNotFoundError):
         raise HTTPException(status_code=422, detail=f"Document '{filename}' is corrupted.")
     paras = doc.paragraphs
     total = len(paras)

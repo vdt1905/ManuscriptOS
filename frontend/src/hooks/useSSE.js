@@ -43,18 +43,20 @@ export function parseSSEChunk(buffer) {
  * @property {(event:any)=>void} onEvent   called for each parsed JSON event
  * @property {()=>void}          [onDone]  called when the stream ends cleanly
  * @property {(err:{message:string})=>void} [onError]  connection/stream error
+ * @property {number} [idleTimeoutMs]  abort and report an error if nothing at
+ *   all (not even a heartbeat) arrives for this long. Off when unset.
  */
 
 /**
  * @param {UseSSEOptions} options
  * @returns {{ start:(url:string,init?:RequestInit)=>Promise<void>, stop:()=>void, status:'idle'|'streaming'|'done'|'error' }}
  */
-export function useSSE({ onEvent, onDone, onError } = {}) {
+export function useSSE({ onEvent, onDone, onError, idleTimeoutMs } = {}) {
   const [status, setStatus] = useState('idle');
   const controllerRef = useRef(null);
   // Keep callbacks in refs so start() doesn't need them as deps (stable identity).
-  const cbs = useRef({ onEvent, onDone, onError });
-  cbs.current = { onEvent, onDone, onError };
+  const cbs = useRef({ onEvent, onDone, onError, idleTimeoutMs });
+  cbs.current = { onEvent, onDone, onError, idleTimeoutMs };
 
   const stop = useCallback(() => {
     if (controllerRef.current) {
@@ -69,6 +71,18 @@ export function useSSE({ onEvent, onDone, onError } = {}) {
     controllerRef.current = controller;
     setStatus('streaming');
 
+    // Watchdog: a live server sends events or heartbeats, so a long silence
+    // means the connection is gone. Re-armed on every chunk received.
+    const idleMs = cbs.current.idleTimeoutMs;
+    let idleTimer = null;
+    let timedOut = false;
+    const armIdleTimer = () => {
+      if (!idleMs) return;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { timedOut = true; controller.abort(); }, idleMs);
+    };
+    armIdleTimer();
+
     try {
       const res = await fetch(url, { ...init, signal: controller.signal });
       if (!res.ok || !res.body) {
@@ -81,6 +95,7 @@ export function useSSE({ onEvent, onDone, onError } = {}) {
 
       while (!done) {
         const { value, done: readerDone } = await reader.read();
+        armIdleTimer();
         done = readerDone;
         if (value) buffer += decoder.decode(value, { stream: true });
 
@@ -97,11 +112,17 @@ export function useSSE({ onEvent, onDone, onError } = {}) {
       setStatus('done');
       cbs.current.onDone?.();
     } catch (err) {
-      if (err?.name === 'AbortError') return; // intentional stop/unmount — silent
+      if (err?.name === 'AbortError' && !timedOut) return; // intentional stop/unmount — silent
       setStatus('error');
-      cbs.current.onError?.({ message: err?.message || 'Connection error' });
+      const message = timedOut
+        ? `No response from the server for ${Math.round(idleMs / 1000)}s. The connection seems to have dropped.`
+        : err?.message || 'Connection error';
+      cbs.current.onError?.({ message });
     } finally {
-      controllerRef.current = null;
+      clearTimeout(idleTimer);
+      // Only clear the ref if it still points at this stream (a newer start()
+      // may have replaced it).
+      if (controllerRef.current === controller) controllerRef.current = null;
     }
   }, [stop]);
 

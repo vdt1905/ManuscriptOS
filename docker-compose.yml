@@ -66,7 +66,7 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       PORT: 3000
-      MONGO_URI: mongodb://mongo:27017/hackamined
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/hackamined}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME}
       CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY}
@@ -91,7 +91,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LATEX_MODEL: ${LATEX_MODEL:-openai/gpt-oss-120b}
       LLM_PROVIDER: ${LLM_PROVIDER:-groq}
-      LLM_MODEL: ${LLM_MODEL:-llama-3.3-70b-versatile}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-oss-120b}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       REQUIRE_AUTH: ${REQUIRE_AUTH:-false}

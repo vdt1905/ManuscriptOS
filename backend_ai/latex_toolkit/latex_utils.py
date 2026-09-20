@@ -22,19 +22,21 @@ import re
 #  Escaping
 # ──────────────────────────────────────────────────────────────
 
-# Order matters: backslash first so we don't double-escape the replacements.
-_ESCAPES: list[tuple[str, str]] = [
-    ("\\", r"\textbackslash{}"),
-    ("&", r"\&"),
-    ("%", r"\%"),
-    ("$", r"\$"),
-    ("#", r"\#"),
-    ("_", r"\_"),
-    ("{", r"\{"),
-    ("}", r"\}"),
-    ("~", r"\textasciitilde{}"),
-    ("^", r"\textasciicircum{}"),
-]
+# Applied in ONE pass (regex + lookup): sequential str.replace re-escaped the
+# braces that the \textbackslash{} replacement itself inserted.
+_ESCAPES: dict[str, str] = {
+    "\\": r"\textbackslash{}",
+    "&": r"\&",
+    "%": r"\%",
+    "$": r"\$",
+    "#": r"\#",
+    "_": r"\_",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+_ESCAPE_RE = re.compile(r"[\\&%$#_{}~^]")
 
 
 def escape_latex(text: str | None) -> str:
@@ -43,10 +45,7 @@ def escape_latex(text: str | None) -> str:
     callers that need math should pass it through verbatim."""
     if not text:
         return ""
-    out = text
-    for char, repl in _ESCAPES:
-        out = out.replace(char, repl)
-    return out
+    return _ESCAPE_RE.sub(lambda m: _ESCAPES[m.group()], text)
 
 
 # ──────────────────────────────────────────────────────────────

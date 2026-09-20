@@ -72,11 +72,13 @@ export function FileTree({
                   value={editingFileName}
                   onChange={(e) => setEditingFileName(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') onFileRename(file._id);
-                    if (e.key === 'Escape') setEditingFileId(null);
+                    // Enter/Escape both close the input, which fires onBlur;
+                    // mark it so blur neither double-submits nor commits a cancel.
+                    if (e.key === 'Enter') { e.currentTarget.dataset.settled = '1'; onFileRename(file._id); }
+                    if (e.key === 'Escape') { e.currentTarget.dataset.settled = '1'; setEditingFileId(null); }
                   }}
                   onClick={(e) => e.stopPropagation()}
-                  onBlur={() => onFileRename(file._id)}
+                  onBlur={(e) => { if (!e.currentTarget.dataset.settled) onFileRename(file._id); }}
                 />
               ) : (
                 <span className="truncate flex-1" title={file.originalName}>{file.originalName}</span>

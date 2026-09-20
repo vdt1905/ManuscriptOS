@@ -63,8 +63,27 @@ Override via `VITE_EXPRESS_URL` and `VITE_PYTHON_AI_URL` (see [frontend/.env.exa
 ## LLM providers
 
 All Python services use **Groq**. Models in play:
-- `llama-3.3-70b-versatile` — Dockyyy chatbot, README summarizer, file-editor DocBot.
-- LaTeX converter — controlled by `LATEX_MODEL` env var. Default `openai/gpt-oss-120b`; alternative `meta-llama/llama-4-maverick-17b-128e-instruct`.
+- `LLM_MODEL` env var (default `openai/gpt-oss-120b`) — Dockyyy chatbot, file-editor DocBot, deep-scan, LaTeX toolkit (`TOOLKIT_MODEL` overrides the toolkit). Groq retired the Llama chat models in 2026.
+- LaTeX repair on a failed compile — controlled by `LATEX_MODEL` env var. Default `openai/gpt-oss-120b`.
+
+## Deep-scan LaTeX generation (stage 2)
+
+The LaTeX is built **deterministically** from the labelled DocIR in
+[backend_ai/deepscan/latex_builder.py](backend_ai/deepscan/latex_builder.py): title, author block, abstract,
+keywords, `\section`s from detected headings, body paragraphs (run formatting → `\textit`/`\textsuperscript`),
+figure captions as floats, numeric citations (`(1)`, `(6, 7)`, superscript `1,2`) as `\cite{refN}`, and
+`thebibliography` in source order. The orchestrator hands the merged DocIR over on `FormatResult.docir`
+(`docir_raw` = pre-merge, for the author lines).
+
+The LLM then only *polishes* body paragraphs, ~650 words per call (math mode, species names). Each polished
+group is accepted only if it keeps ≥95% of the words and every `\cite` (`_polish_acceptable` in
+`agno_router.py`); otherwise the structural version stays. Do not go back to asking the model to convert whole
+sections: that is what lost 65–80% of the text before.
+
+Stage 1 gotchas fixed along the way and worth keeping: the abstract ends at the keywords line (PNAS puts the
+introduction right after it with no heading); the LLM role-correction pass may only fill `UNKNOWN`/weak `BODY`
+labels, never override heuristic ones; citeproc entries are registered in order (a `set` shuffled the
+bibliography); title-case must not lowercase identifiers (`GrlA`, `LEE1`).
 - DuckDuckGo tool is shared by Dockyyy and Agno pipeline agents.
 
 Required env: `GROQ_API_KEY`, `JWT_SECRET_KEY` (must match Express), `MONGO_URI`, `CLOUDINARY_*` (Express only), `GITHUB_TOKEN` (optional). See repo-root [.env.example](.env.example) for the full list.

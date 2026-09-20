@@ -67,7 +67,8 @@ async def format_document(
 
         return JSONResponse(content={
             "success": True,
-            "output_filename": result.output_filename,
+            # bare name: that is what /api/download/{filename} takes
+            "output_filename": Path(result.output_filename).name if result.output_filename else None,
             "compliance_score": result.compliance_report.overall_score if result.compliance_report else None,
             "processing_time_seconds": result.processing_time_seconds,
         })

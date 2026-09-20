@@ -34,9 +34,10 @@ export const ToastProvider = ({ children }) => {
     );
 };
 
-// Custom hook to maintain compatibility with existing codebase
-export const useToast = () => {
-    return {
+// One shared object: hooks that list `toast` as an effect dependency would
+// otherwise re-run on every render (a fresh object each call fired the
+// "could not load documents" toast on every keystroke).
+const toastApi = {
         toast: ({ title, description, variant = 'info' }) => {
             const message = description ? `${title}: ${description}` : title;
 
@@ -81,6 +82,8 @@ export const useToast = () => {
                     padding: '16px'
                 }
             });
-        }
-    };
+        },
 };
+
+// Custom hook to maintain compatibility with existing codebase
+export const useToast = () => toastApi;

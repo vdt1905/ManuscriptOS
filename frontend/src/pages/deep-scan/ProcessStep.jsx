@@ -1,6 +1,6 @@
 // Step 3 — Process (SSE streaming via the useSSE hook).
-import { useEffect, useRef, useCallback } from 'react';
-import { Play, Check, ChevronRight } from 'lucide-react';
+import { useEffect, useRef, useCallback, useState } from 'react';
+import { Play, Check, ChevronRight, ChevronLeft, X } from 'lucide-react';
 import useDeepScanStore from '../../store/useDeepScanStore';
 import { useSSE } from '../../hooks/useSSE';
 import { deepScanService } from '../../services';
@@ -14,14 +14,19 @@ export function ProcessStep() {
     processingProgress, setProcessingProgress,
     currentStage, setCurrentStage,
     isProcessingDone, setIsProcessingDone,
+    latexContent,
     setFormattedFile, setComplianceScore, setLatexContent,
     setAssets, setIntegrityReport, setMissingFigures,
     setStep,
   } = useDeepScanStore();
 
   const logRef = useRef(null);
-  const started = useRef(false);
   const logCount = useRef(0);
+  const [streamFailed, setFailed] = useState(false);
+  const failed = streamFailed || !uploadedFile;
+  // Seconds the server has been busy on the current step, from its heartbeats;
+  // null while events are flowing normally.
+  const [busySec, setBusySec] = useState(null);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -29,8 +34,17 @@ export function ProcessStep() {
 
   // Handle one parsed SSE event from the pipeline.
   const handleEvent = useCallback((payload) => {
+    // Heartbeats only prove the server is alive and busy; show that in the
+    // header instead of the log.
+    if (payload.heartbeat) {
+      if (payload.stage) setCurrentStage(payload.stage);
+      setBusySec(payload.elapsed_s ?? 0);
+      return;
+    }
+    setBusySec(null);
     if (payload.error) {
       addProcessLog({ time: now(), message: `Error: ${payload.error}` });
+      setFailed(true);
       setIsProcessingDone(true);
       return;
     }
@@ -46,7 +60,15 @@ export function ProcessStep() {
     if (payload.formatted_file) setFormattedFile(payload.formatted_file);
     if (payload.integrity) setIntegrityReport(payload.integrity);
     if (payload.is_final) {
-      if (payload.latex) setLatexContent(payload.latex);
+      if (!payload.latex) {
+        // The server finished without producing LaTeX: that is a failure,
+        // not a green "Pipeline Complete" with an empty editor behind it.
+        addProcessLog({ time: now(), message: 'Error: no LaTeX was generated.' });
+        setFailed(true);
+        setIsProcessingDone(true);
+        return;
+      }
+      setLatexContent(payload.latex);
       if (payload.assets) setAssets(payload.assets, payload.assets_base, payload.job);
       if (Array.isArray(payload.missing_figures)) setMissingFigures(payload.missing_figures);
       setProcessingProgress(100);
@@ -60,14 +82,25 @@ export function ProcessStep() {
     onEvent: handleEvent,
     onDone: () => setIsProcessingDone(true),
     onError: (err) => {
-      addProcessLog({ time: now(), message: `Connection error: ${err.message}` });
+      addProcessLog({ time: now(), message: `Error: ${err.message}` });
+      setFailed(true);
+      setBusySec(null);
       setIsProcessingDone(true);
     },
+    // The server sends a heartbeat every 5 s while busy, so 45 s of total
+    // silence means the connection is dead, not that it's still working.
+    idleTimeoutMs: 45_000,
   });
 
+  // No "already started" guard: in dev, React StrictMode mounts, unmounts and
+  // remounts. The unmount aborts the first stream (useSSE cleanup) before it
+  // is sent, so the remount must start a fresh one; a guard left the page
+  // stuck at 0% with nothing in flight. In production this runs once.
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
+    // Coming back to this step after a finished run (e.g. "Back to Process"
+    // from the LaTeX editor) must not re-upload and re-run the pipeline,
+    // which would also overwrite any LaTeX the user has edited since.
+    if (isProcessingDone && latexContent) return;
     clearProcessLogs();
     setProcessingProgress(0);
     setCurrentStage(0);
@@ -98,7 +131,10 @@ export function ProcessStep() {
     <div className="max-w-3xl mx-auto">
       <div className="text-center mb-6">
         <h1 className="text-4xl font-anton font-normal tracking-wide text-[var(--color-text-main)] mb-2">Processing Document</h1>
-        <p className="text-sm text-[var(--color-text-muted)] mt-1">{stageLabel}</p>
+        <p className="text-sm text-[var(--color-text-muted)] mt-1">
+          {stageLabel}
+          {busySec != null && !isProcessingDone && ` · still working (${busySec}s)`}
+        </p>
       </div>
 
       <StepBar currentStep={3} onStepClick={(s) => isProcessingDone && s < 3 && setStep(s)} disabled={!isProcessingDone} />
@@ -106,8 +142,10 @@ export function ProcessStep() {
       <div className="bg-white rounded-xl shadow-sm border border-[var(--color-surface-200)] p-8">
         <div className="flex items-center justify-between mb-2">
           <span className="text-sm font-semibold text-[var(--color-text-main)] flex items-center gap-2">
-            {isProcessingDone ? <Check className="w-4 h-4 text-green-600" /> : <Play className="w-4 h-4 text-[var(--color-primary-600)]" />}
-            {isProcessingDone ? 'Pipeline Complete' : 'Processing...'}
+            {!isProcessingDone ? <Play className="w-4 h-4 text-[var(--color-primary-600)]" />
+              : failed ? <X className="w-4 h-4 text-red-600" />
+                : <Check className="w-4 h-4 text-green-600" />}
+            {!isProcessingDone ? 'Processing...' : failed ? 'Pipeline Failed' : 'Pipeline Complete'}
           </span>
           <span className="text-sm font-semibold text-[var(--color-text-muted)]">{processingProgress}%</span>
         </div>
@@ -150,9 +188,15 @@ export function ProcessStep() {
 
         {isProcessingDone && (
           <div className="flex justify-end mt-6">
-            <button onClick={() => setStep(4)} className="flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-lg bg-[var(--color-primary-600)] text-white hover:bg-[var(--color-primary-700)]">
-              View LaTeX <ChevronRight className="w-4 h-4" />
-            </button>
+            {failed ? (
+              <button onClick={() => setStep(2)} className="flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-lg bg-[var(--color-primary-600)] text-white hover:bg-[var(--color-primary-700)]">
+                <ChevronLeft className="w-4 h-4" /> Back to Configure
+              </button>
+            ) : (
+              <button onClick={() => setStep(4)} className="flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-lg bg-[var(--color-primary-600)] text-white hover:bg-[var(--color-primary-700)]">
+                View LaTeX <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
           </div>
         )}
       </div>

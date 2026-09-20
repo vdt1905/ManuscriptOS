@@ -58,6 +58,21 @@ export const deepScanService = {
     };
   },
 
+  /** POST /api/v2/latex-to-docx — DOCX built from the final LaTeX (styled like
+   *  the PDF) and handed to the AI document agent. Returns { filename }. */
+  latexToDocx: async (latex, { job = null, style = 'ieee', name = null } = {}) => {
+    const res = await fetch(`${BASE}/api/v2/latex-to-docx`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ latex, job, style, name }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.filename) {
+      throw { message: data.detail || data.error || `Conversion failed (${res.status})`, status: res.status };
+    }
+    return data;
+  },
+
   /** POST /api/v2/assets/:job/:n — upload an image for a missing figure (Phase I). */
   uploadFigure: async (job, n, file, latex = '') => {
     const fd = new FormData();

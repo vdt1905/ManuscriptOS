@@ -201,8 +201,9 @@ class ParagraphMerger:
             if primary is None:
                 continue
 
-            # Collect texts and citations from all elements in group
+            # Collect texts, runs and citations from all elements in group
             texts = []
+            members = [primary]
             all_citations = list(primary.citations_found)
             texts.append(primary.content.strip())
 
@@ -211,14 +212,16 @@ class ParagraphMerger:
                 if sub is None:
                     continue
                 texts.append(sub.content.strip())
+                members.append(sub.model_copy(deep=True))
                 all_citations.extend(sub.citations_found)
                 # Clear subordinate
                 sub.content = ""
                 sub.role = ElementRole.UNKNOWN
                 sub.role_confidence = 0.0
 
-            # Merge text
+            # Merge text (and runs the same way, so italics/superscripts survive)
             primary.content = self._join_texts(texts)
+            primary.runs = self._join_runs(members)
             primary.citations_found = all_citations
 
         return new_docir
@@ -393,6 +396,48 @@ class ParagraphMerger:
             elem.role = ElementRole.UNKNOWN  # Will be skipped
 
         return merged
+
+    _INVISIBLE = ("\u200b", "\u200f", "\ufeff", "\u00ad")   # same set _join_texts strips
+
+    @classmethod
+    def _join_runs(cls, elements: list[DocElement]) -> list:
+        """Run-level twin of _join_texts: concatenating the returned runs'
+        text gives exactly what _join_texts gives for the same elements
+        (same invisible-character removal, stripping, spacing and hyphen
+        repair), so downstream code can map formatting back onto the text."""
+        from ..schemas.docir import RunFormatting
+
+        result: list = []
+        for elem in elements:
+            runs = []
+            for r in elem.runs:
+                t = r.text
+                for ch in cls._INVISIBLE:
+                    t = t.replace(ch, "")
+                if t:
+                    c = r.model_copy()
+                    c.text = t
+                    runs.append(c)
+            # strip() at element level, across run boundaries
+            while runs and not runs[0].text.strip():
+                runs.pop(0)
+            while runs and not runs[-1].text.strip():
+                runs.pop()
+            if not runs:
+                continue
+            runs[0].text = runs[0].text.lstrip()
+            runs[-1].text = runs[-1].text.rstrip()
+
+            if result:
+                prev = result[-1]
+                if prev.text.endswith("-") and runs[0].text[:1].islower():
+                    prev.text = prev.text[:-1]        # "re-" + "port" -> "report"
+                    if not prev.text:
+                        result.pop()
+                elif not prev.text.endswith(" "):
+                    result.append(RunFormatting(text=" "))
+            result.extend(runs)
+        return result
 
     @staticmethod
     def _join_texts(texts: list[str]) -> str:

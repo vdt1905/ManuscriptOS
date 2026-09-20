@@ -50,7 +50,7 @@ HackaMineD takes unstructured manuscripts (PDF, DOCX, TXT), runs them through a 
   - `ProjectWorkspace.jsx` - File tree and tabbed IDE.
   - `ChatBot.jsx` - The global Dockyyy component.
 
-### Pipeline API (`/Python`)
+### Pipeline API (`/backend_ai`)
 - **Framework:** FastAPI
 - **LLM Orchestration:** `Agno` (Agents, Workflows)
 - **LLM Engine:** Groq (Llama-3 & Llama-4-Maverick 17b)
@@ -67,29 +67,78 @@ HackaMineD takes unstructured manuscripts (PDF, DOCX, TXT), runs them through a 
 
 ## 🚀 Getting Started
 
-### 1. Start the Node Backend
+All secrets live in **one file: the repo-root `.env`** (gitignored). Docker Compose, Express and FastAPI all read it.
+
+| Key | Required | Notes |
+|---|---|---|
+| `GROQ_API_KEY` | yes | LLM calls |
+| `JWT_SECRET_KEY` | yes | shared by Express (signs) and FastAPI (verifies) |
+| `MONGO_URI` | yes for local run | e.g. an Atlas `mongodb+srv://…/hackamined` URI. Under Docker, unset falls back to the bundled `mongo` container |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | yes | profile pictures and uploads |
+| `OPENAI_API_KEY`, `GITHUB_TOKEN`, `LATEX_MODEL`, `LLM_PROVIDER`, `LLM_MODEL`, `REQUIRE_AUTH` | no | see `docker-compose.yml` for defaults |
+| `BACKEND_AI_PORT` | no | FastAPI port for the local run (default `8000`). Docker ignores it |
+
+You can run the stack in either of two ways.
+
+### Option A: Docker
+
 ```bash
-cd backend
-npm install
-npm run dev
-# Runs on port 5000 by default. Requires MongoDB and JWT Secrets in .env
+docker compose up --build          # NGINX :80, Express, FastAPI, Mongo
+cd frontend && npm install && npm run dev
 ```
 
-### 2. Start the AI Python Engine
-```bash
-cd Python
-pip install fastapi uvicorn agno PyPDF2 python-docx pyspellchecker python-dotenv
-uvicorn api:app --port 8000 --reload
-# Runs on port 8000. Requires GROQ_API_KEY in .env
+Open http://localhost:5173.
+
+### Option B: Run locally (without Docker)
+
+Needs **Node 20+**, **Anaconda or Miniconda**, and `MONGO_URI` set in `.env`.
+
+**One-time setup** (PowerShell, from the repo root):
+
+```powershell
+# Python 3.11 + the LaTeX engine (tectonic) + pandoc, isolated in .\.venv
+conda create -y -p .\.venv --override-channels -c conda-forge python=3.11 tectonic pandoc
+.\.venv\python.exe -m pip install -r backend_ai\requirements.txt
+
+npm install --prefix backend
+npm install --prefix frontend
+
+# Pre-download the core TeX packages (~40 s) so the first "Compile PDF" doesn't time out
+Set-Content $env:TEMP\warm.tex '\documentclass{article}\begin{document}x\end{document}'
+.\.venv\Library\bin\tectonic.exe -X compile $env:TEMP\warm.tex --outdir $env:TEMP
 ```
 
-### 3. Start the React Frontend
-```bash
-cd frontend
-npm install
-npm run dev
-# Runs on the standard Vite port (e.g. 5173). Connects to API_URL endpoints.
+**Every time:**
+
+```powershell
+.\dev-local.ps1
 ```
+
+This opens three windows (FastAPI, Express, Vite). Open the `Local:` URL printed in the Vite window, normally http://localhost:5173. To stop a service, close its window.
+
+<details>
+<summary>Or start the three services by hand</summary>
+
+```powershell
+# Terminal 1: FastAPI. tectonic and pandoc must be on PATH for the LaTeX features.
+$env:PATH = "$PWD\.venv;$PWD\.venv\Library\bin;$PWD\.venv\Scripts;$env:PATH"
+.\.venv\python.exe -m backend_ai.main
+
+# Terminal 2: Express (:3000)
+npm start --prefix backend
+
+# Terminal 3: frontend. Vite detects the local backends and routes /api straight to them
+npm run dev --prefix frontend
+```
+</details>
+
+**Troubleshooting**
+
+- *"Port 8000 is already in use"*: another app is on it. Set `BACKEND_AI_PORT=8001` (or any free port) in `.env`; the Vite proxy follows automatically.
+- *Vite says "Port 5173 is in use, trying another one"*: harmless. Use the URL it prints.
+- *"No backend is running" (HTTP 502)*: neither setup is up. `npm run dev` uses the local backends when Express answers on :3000, otherwise Docker's NGINX on :80, re-checked every couple of seconds; start one of them and retry.
+- *First PDF compile of a new document class is slow*: tectonic downloads the packages it needs once, then caches them.
+- *Login works under Docker but not locally, or the reverse*: they can use different databases (the Docker `mongo` container vs. `MONGO_URI`), so an account made in one doesn't exist in the other.
 
 ---
 

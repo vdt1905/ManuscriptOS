@@ -199,7 +199,9 @@ def compile_latex(
         try:
             proc = subprocess.run(
                 ["tectonic", "-X", "compile", "main.tex",
-                 "--outdir", str(build), "--keep-logs", "--synctex=0"],
+                 # SyncTeX is off unless --synctex is passed; it is a bare flag,
+                 # and tectonic >= 0.17 rejects a value like "--synctex=0".
+                 "--outdir", str(build), "--keep-logs"],
                 cwd=str(build),
                 capture_output=True,
                 text=True,

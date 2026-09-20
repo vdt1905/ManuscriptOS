@@ -1,11 +1,10 @@
 // LaTeX split workspace — outline + Monaco + PDF preview (presentational).
-import { ListOrdered, FileDown, ImagePlus, X } from 'lucide-react';
+import { ListOrdered, FileDown } from 'lucide-react';
 import MonacoEditor from '@monaco-editor/react';
 
 export function LatexEditorPane({
   activeFile, localContent, onEditorChange,
   latexOutline, latexEditorRef, latexPreviewRef,
-  latexAssets, setLatexAssets, onAssetUpload,
   latexCompiling, latexCompiled,
 }) {
   return (
@@ -38,23 +37,7 @@ export function LatexEditorPane({
         <div className="flex flex-col flex-1 overflow-hidden">
           <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-surface-200)] bg-[var(--color-surface-50)] shrink-0 text-xs">
             <span className="font-semibold text-[var(--color-text-main)]">{activeFile.originalName}</span>
-            <div>
-              <input type="file" accept="image/*, .sty, .bib, .cls" multiple onChange={onAssetUpload} className="hidden" id="latex-asset-upload-ws" />
-              <label htmlFor="latex-asset-upload-ws" className="cursor-pointer flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-[var(--color-primary-600)] bg-[var(--color-primary-50)] hover:bg-[var(--color-primary-100)] rounded transition-colors">
-                <ImagePlus className="h-3.5 w-3.5" /> Upload Assets
-              </label>
-            </div>
           </div>
-          {latexAssets.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-3 py-1.5 bg-[var(--color-surface-100)] border-b border-[var(--color-surface-200)] shrink-0">
-              {latexAssets.map((file, idx) => (
-                <div key={idx} className="flex items-center gap-1 px-2 py-0.5 bg-white border border-[var(--color-surface-300)] rounded-md text-[11px]">
-                  <span className="max-w-[100px] truncate">{file.name}</span>
-                  <button onClick={() => setLatexAssets(prev => prev.filter((_, i) => i !== idx))} className="hover:text-red-500 transition-colors"><X className="h-3 w-3" /></button>
-                </div>
-              ))}
-            </div>
-          )}
           <div className="flex-1">
             <MonacoEditor
               height="100%"

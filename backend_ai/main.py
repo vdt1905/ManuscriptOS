@@ -33,9 +33,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-# Load .env from the backend-ai folder (consolidates the four legacy .env files).
+# Load backend_ai/.env if present, then the repo-root .env (shared with Express
+# and docker compose) for anything still unset. Neither overrides variables that
+# are already in the environment, so docker compose's values take precedence.
 HERE = Path(__file__).resolve().parent
 load_dotenv(HERE / ".env")
+load_dotenv(HERE.parent / ".env")
 
 # Default DB + data paths so the sub-routers don't write to a stray cwd.
 os.environ.setdefault("DOCKYYY_DB_PATH",         str(HERE / "data" / "dockyyy.db"))
