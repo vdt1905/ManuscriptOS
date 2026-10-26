@@ -26,8 +26,11 @@ export function DocumentLibrary({
           }`}
         >
           {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5 opacity-60" />}
-          <span className="mt-1">{uploading ? 'UPLOADING…' : 'UPLOAD .DOCX'}</span>
-          <input type="file" className="hidden" accept=".docx" onChange={onUpload} ref={fileInputRef} disabled={uploading} />
+          <span className="mt-1">{uploading ? 'UPLOADING…' : 'UPLOAD .DOCX OR .PDF'}</span>
+          {!uploading && (
+            <span className="text-[10px] font-medium normal-case opacity-80">PDFs are converted so DocBot can edit them</span>
+          )}
+          <input type="file" className="hidden" accept=".docx,.pdf" onChange={onUpload} ref={fileInputRef} disabled={uploading} />
         </label>
       </div>
 

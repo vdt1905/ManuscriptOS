@@ -1,0 +1,119 @@
+# ai-service — Python/FastAPI: chatbot, deep-scan pipeline, DocBot editor,
+# LaTeX toolkit. It keeps chat history (SQLite) and documents on disk, so it
+# runs as a single replica with a persistent volume.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-service
+spec:
+  selector:
+    app: ai-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ai-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-service
+  strategy:
+    type: Recreate          # the volume can be mounted by one pod at a time
+  template:
+    metadata:
+      labels:
+        app: ai-service
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001            # makes the volume writable for that user
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ai-service
+          image: docling/ai-service
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: docling-config
+          env:
+            # The container's own filesystem is read-only, so tectonic keeps
+            # its downloaded LaTeX packages on the persistent volume instead
+            # (downloaded once, reused after restarts).
+            - name: XDG_CACHE_HOME
+              value: /app/backend_ai/data/.cache
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: JWT_SECRET_KEY }
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: GROQ_API_KEY, optional: true }
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: OPENAI_API_KEY, optional: true }
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: GITHUB_TOKEN, optional: true }
+          # Loading the AI libraries takes a while: allow up to 3 minutes
+          # before liveness checks begin.
+          startupProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true      # writable only where mounted below
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: tmp                       # temp files (converters, LaTeX builds)
+              mountPath: /tmp
+            - name: home                      # libraries that write to $HOME
+              mountPath: /home/app
+            # Persistent: chat history (SQLite) and DocBot's documents.
+            - name: ai-data
+              mountPath: /app/backend_ai/data
+            # Scratch space for deep-scan's intermediate files; the finished
+            # document is copied into the persistent volume above.
+            - name: deepscan-output
+              mountPath: /app/backend_ai/deepscan/output
+      volumes:
+        - name: ai-data
+          persistentVolumeClaim:
+            claimName: ai-data
+        - name: deepscan-output
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}

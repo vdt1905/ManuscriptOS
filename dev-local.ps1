@@ -18,6 +18,13 @@ if (-not (Select-String -Path $envFile -Pattern '^MONGO_URI=' -Quiet)) {
 $aiPort = (Select-String -Path $envFile -Pattern '^BACKEND_AI_PORT=(\d+)').Matches.Groups[1].Value
 if (-not $aiPort) { $aiPort = '8000' }
 
+# The browser calls FastAPI directly, so VITE_AI_URL must point at the port
+# FastAPI actually binds (both come from .env).
+$viteAiPort = (Select-String -Path $envFile -Pattern '^VITE_AI_URL=\S*?:(\d+)').Matches.Groups[1].Value
+if ($viteAiPort -and $viteAiPort -ne $aiPort) {
+    throw "VITE_AI_URL points at port $viteAiPort but BACKEND_AI_PORT is $aiPort. Make them match in $envFile."
+}
+
 # Check npm's install marker, not the folder: docker compose leaves an EMPTY
 # backend\node_modules behind as a mount point for its node_modules volume.
 foreach ($dir in 'backend', 'frontend') {

@@ -3,7 +3,7 @@ node_modules/
 npm-debug.log
 yarn-error.log
 yarn.lock
-package-lock.json
+# package-lock.json IS committed: npm ci needs it for reproducible builds.
 
 # Build directories
 dist/
@@ -53,9 +53,20 @@ PRODUCTION_ROADMAP.md
 
 # SQLite databases (runtime data — not source code)
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
 # Uploaded user documents and generated output (runtime data)
 backend_ai/data/documents_store/
 backend_ai/deepscan/output/
+
+# Terraform (infra/aws, infra/kind): local state, provider cache, secrets,
+# generated kubeconfig. The state holds secret values: never commit it.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+*.kubeconfig

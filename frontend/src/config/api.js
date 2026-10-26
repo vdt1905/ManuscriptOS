@@ -1,48 +1,46 @@
 // =====================================================================
-// Central backend URL configuration (Phase E.2 — NGINX single origin).
+// Central backend URL configuration.
 //
-// Every request goes to ONE origin: the NGINX reverse proxy. NGINX routes
-// /api/auth + /api/projects → Express, and /api/ai/* → FastAPI, internally.
-// The SPA never knows (or needs to know) there are two backends.
+// The SPA talks to the two backends directly — there is no reverse proxy:
+//   Express  (auth, projects, files)  → VITE_EXPRESS_URL, default :3000
+//   FastAPI  (chatbot, deep-scan,     → VITE_AI_URL,      default :8000
+//             file editor, toolkit)
 //
-// Set VITE_API_URL to wherever NGINX is reachable:
-//   • local dev:  http://localhost:80   (the compose nginx service)
-//   • production: https://api.yourdomain.com
+// Both send permissive CORS headers, so the browser may call them from
+// http://localhost:5173. Set the two variables in the repo-root .env (Vite
+// reads it via `envDir` in vite.config.js); in production point them at
+// wherever the two services are deployed.
 // =====================================================================
 
+// Unset -> the local-dev default. "/" (or empty) -> '' = same origin, i.e.
+// relative URLs like /api/auth: the container build for Kubernetes, where one
+// Ingress serves the site and both APIs under a single address.
 const fromEnv = (key, fallback) => {
   const v = import.meta.env?.[key];
-  return v && v.trim() ? v.trim().replace(/\/+$/, '') : fallback;
+  if (v === undefined || v === null) return fallback;
+  return String(v).trim().replace(/\/+$/, '');
 };
 
-// The single public origin — the NGINX proxy.
-//   Dev (no .env.local needed): empty string → relative URLs (/api/auth etc.).
-//     Vite proxy intercepts /api/* → http://localhost:80 so the browser never
-//     makes a cross-origin request → zero CORS issues during development.
-//   Prod: set VITE_API_URL=https://api.yourdomain.com in your build environment.
-//   Legacy: VITE_EXPRESS_URL still accepted so older .env files keep working.
-const BASE = fromEnv('VITE_API_URL', fromEnv('VITE_EXPRESS_URL', ''));
+const EXPRESS = fromEnv('VITE_EXPRESS_URL', 'http://localhost:3000');
+const AI = fromEnv('VITE_AI_URL', 'http://localhost:8000');
 
-export const API = { BASE };
+export const API = { EXPRESS, AI };
 
-// AI routes live under /api/ai/* (NGINX strips that prefix before FastAPI).
-const AI_ROOT = `${BASE}/api/ai`;
-
-// Endpoint roots — what callers actually import. All hang off the one origin.
+// Endpoint roots — what callers actually import.
 export const ENDPOINTS = {
-  auth:         `${BASE}/api/auth`,
-  projects:     `${BASE}/api/projects`,
+  auth:         `${EXPRESS}/api/auth`,
+  projects:     `${EXPRESS}/api/projects`,
 
-  // AI service mounts (NGINX → FastAPI):
+  // FastAPI routers (backend_ai/main.py mounts them at these prefixes):
   //   /api/v2/ask                       → Dockyyy chatbot
-  //   /deepscan/api/v2/pipeline/stream  → deep-scan (core document→LaTeX engine)
+  //   /deepscan/api/v2/pipeline/stream  → deep-scan (document → LaTeX engine)
   //   /files/...                        → DocBot DOCX editor agent
-  //   /toolkit/...                      → LaTeX Toolkit (Phase H)
-  chatbot:        `${AI_ROOT}/api/v2`,
-  deepScan:       `${AI_ROOT}/deepscan`,
-  deepScanCompile:`${AI_ROOT}/deepscan/api/v2/compile`,
-  fileEditor:     `${AI_ROOT}/files`,
-  toolkit:        `${AI_ROOT}/toolkit`,
+  //   /toolkit/...                      → LaTeX toolkit
+  chatbot:        `${AI}/api/v2`,
+  deepScan:       `${AI}/deepscan`,
+  deepScanCompile:`${AI}/deepscan/api/v2/compile`,
+  fileEditor:     `${AI}/files`,
+  toolkit:        `${AI}/toolkit`,
 };
 
 // =====================================================================

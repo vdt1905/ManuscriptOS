@@ -1,4 +1,4 @@
-// LaTeX Toolkit API (FastAPI /toolkit via NGINX, Phase H).
+// LaTeX Toolkit API (FastAPI, /toolkit).
 import { ENDPOINTS, authHeaders } from '../config/api';
 import { request } from './httpClient';
 

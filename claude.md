@@ -6,9 +6,13 @@ AI-powered manuscript formatting & research platform built at Hack-NU 2026 by a 
 
 | Folder | Port | Stack | Owner role |
 |---|---|---|---|
-| `backend/` | 3000 | Express + MongoDB + JWT + Cloudinary | Auth, projects, files, LaTeX compile proxy |
-| `backend_ai/` | 8000 | FastAPI (one process, 4 routers) | Chatbot, reconstruct, deep-scan, file-editor, README generator |
+| `backend/` | 3000 | Express + MongoDB + JWT + Cloudinary | Auth, projects, files |
+| `backend_ai/` | `BACKEND_AI_PORT` (8000) | FastAPI (one process, 4 routers) | Chatbot, deep-scan, file-editor, LaTeX toolkit |
 | `frontend/` | 5173 (Vite) | React 19 + Zustand + Tailwind | Single SPA |
+
+Three processes and a database — no reverse proxy. The browser calls both
+backends directly on their own ports (they send permissive CORS headers), in
+docker and in the local run alike.
 
 The 4 hackathon-era Python folders (`backend-chatbot-spellCheck/`, `backend-agent-pipeline/`, `backend-agent-fileEditor/`, `backend-readme-generator-github/`) and the intermediate `services/` folder have been **deleted**. All Python code now lives under `backend_ai/` as proper Python sub-packages.
 
@@ -23,7 +27,7 @@ backend_ai/
 ├── chatbot/             Dockyyy + reconstruct pipeline  → /api/v2/*
 ├── deepscan/            FormatForge multi-agent pipeline → /deepscan/*
 ├── file_editor/         DocBot DOCX editor + 23 tools    → /files/*
-├── readme_gen/          GitHub README generator          → /readme/*
+├── latex_toolkit/       LaTeX tools + export              → /toolkit/*
 └── data/                SQLite DBs + documents_store/
 ```
 
@@ -35,14 +39,12 @@ Dashboard → Upload → Configure (target style) → Process (SSE-streamed agen
 
 ## Frontend → backend wiring
 
-All API calls go through [`frontend/src/config/api.js`](frontend/src/config/api.js) — one config module, env-var overridable. **Two service roots:**
+All API calls go through [`frontend/src/config/api.js`](frontend/src/config/api.js) — one config module, two roots:
 
-- `EXPRESS`   → `http://localhost:3000`  — auth, projects, files, LaTeX compile proxy
-- `PYTHON_AI` → `http://127.0.0.1:8000`  — chatbot (`/api/v2`), deep-scan (`/deepscan`), file-editor (`/files`), readme-gen (`/readme`)
+- `EXPRESS` (`VITE_EXPRESS_URL`, default `http://localhost:3000`) — `auth`, `projects`
+- `AI` (`VITE_AI_URL`, default `http://localhost:8000`) — `chatbot` (`/api/v2`), `deepScan` (`/deepscan`), `deepScanCompile`, `fileEditor` (`/files`), `toolkit` (`/toolkit`)
 
-Exported `ENDPOINTS`: `auth`, `projects`, `latexCompile` (Express), `chatbot`, `deepScan`, `fileEditor`, `readmeGen` (all five Python ones share the same `PYTHON_AI` root).
-
-Override via `VITE_EXPRESS_URL` and `VITE_PYTHON_AI_URL` (see [frontend/.env.example](frontend/.env.example)).
+Both variables live in the repo-root `.env`; [`frontend/vite.config.js`](frontend/vite.config.js) sets `envDir` to the repo root so Vite reads them from there. There is no dev proxy and no URL rewriting — what the frontend requests is what FastAPI serves.
 
 ## State management
 
@@ -86,7 +88,7 @@ labels, never override heuristic ones; citeproc entries are registered in order 
 bibliography); title-case must not lowercase identifiers (`GrlA`, `LEE1`).
 - DuckDuckGo tool is shared by Dockyyy and Agno pipeline agents.
 
-Required env: `GROQ_API_KEY`, `JWT_SECRET_KEY` (must match Express), `MONGO_URI`, `CLOUDINARY_*` (Express only), `GITHUB_TOKEN` (optional). See repo-root [.env.example](.env.example) for the full list.
+Required env: `GROQ_API_KEY`, `JWT_SECRET_KEY` (must match Express), `MONGO_URI`, `CLOUDINARY_*` (Express only), `GITHUB_TOKEN` (optional), plus `VITE_EXPRESS_URL` / `VITE_AI_URL` for the frontend. All of it lives in the repo-root `.env`; the table in [README.md](README.md) documents each key.
 
 ## Auth
 
@@ -106,9 +108,9 @@ Frontend: [frontend/src/config/api.js](frontend/src/config/api.js) installs a gl
 # Everything at once via docker:
 docker compose up --build
 
-# Or run components individually:
+# Or run components individually (dev-local.ps1 does all three on Windows):
 cd backend     && npm install && npm run dev          # Express on :3000
-python -m backend_ai.main                              # Python on :8000
+python -m backend_ai.main                              # FastAPI on BACKEND_AI_PORT
 cd frontend    && npm install && npm run dev          # Vite SPA on :5173
 ```
 
@@ -117,7 +119,7 @@ cd frontend    && npm install && npm run dev          # Vite SPA on :5173
 - Express uses ES modules (`"type": "module"` in `backend/package.json`).
 - Frontend uses **Tailwind v4** and **React 19** — many lint rules behave differently from v3 / React 18.
 - Editors: `react-quill-new` (validation), `@uiw/react-md-editor` (markdown), `monaco-editor` (LaTeX).
-- LaTeX compilation: Vite dev proxy `/latex-api` → `https://latexonline.cc`; also `texlive.net` form-post used by `docs/demos/index1.html`.
+- LaTeX compilation runs locally: tectonic, via `POST /deepscan/api/v2/compile`. `POST /deepscan/api/v2/latex-to-docx` turns the same LaTeX into the DOCX the Agent step shows (pandoc + a styling pass in `deepscan/latex_to_docx.py`).
 - `ChatBot.jsx` is "context-aware": on the validation page it reads the live document and silently feeds it to `/api/v2/ask`.
 - SSE responses are JSON-per-event, not plain text — frontend parses each line as JSON.
 
@@ -127,13 +129,13 @@ cd frontend    && npm install && npm run dev          # Vite SPA on :5173
 - Chatbot prompts → [backend_ai/chatbot/prompts.py](backend_ai/chatbot/prompts.py)
 - Deep-scan pipeline router → [backend_ai/deepscan/agno_router.py](backend_ai/deepscan/agno_router.py)
 - File-editor 23 tools → [backend_ai/file_editor/routes.py](backend_ai/file_editor/routes.py)
-- README LaTeX templates → [backend_ai/readme_gen/routes.py](backend_ai/readme_gen/routes.py)
+- LaTeX toolkit → [backend_ai/latex_toolkit/routes.py](backend_ai/latex_toolkit/routes.py)
 - Shared JWT verifier → [backend_ai/common/jwt_auth.py](backend_ai/common/jwt_auth.py)
 - Mongoose models → [backend/models/](backend/models/) (User, Project)
 - Auth middleware → [backend/middleware/authMiddleware.js](backend/middleware/authMiddleware.js)
 - Frontend config → [frontend/src/config/api.js](frontend/src/config/api.js)
-- Orchestration → [docker-compose.yml](docker-compose.yml)
+- Orchestration → [docker-compose.yml](docker-compose.yml), or [dev-local.ps1](dev-local.ps1) for the no-docker run
 
 ## Status
 
-See [README.md](README.md) for the marketing copy. The Phase 0–3 hackathon-cleanup work is done; the codebase is now 2 backends + 1 frontend with no duplicate code, central frontend config, shared JWT, and consolidated env file. Remaining work: persistence/storage hardening (move SQLite to Postgres for multi-instance), structured logs, rate-limiting, background job queue for long-running SSE.
+See [README.md](README.md) for the marketing copy. The Phase 0–3 hackathon-cleanup work is done; the codebase is now 2 backends + 1 frontend with no duplicate code, central frontend config, shared JWT, and consolidated env file. The NGINX reverse proxy was removed afterwards — the SPA now calls both backends directly, so there is one less moving part to run and explain. Remaining work: persistence/storage hardening (move SQLite to Postgres for multi-instance), structured logs, rate-limiting (NGINX used to do this), per-user isolation in `file_editor`, background job queue for long-running SSE.

@@ -1,0 +1,51 @@
+# Public link: a Cloudflare Tunnel running inside the cluster.
+# It opens an outbound connection to Cloudflare (no router/firewall changes,
+# no inbound port) and gives the app a public HTTPS address:
+#
+#     kubectl apply -f k8s/public-link/cloudflared.yaml
+#     kubectl -n docling logs deploy/cloudflared | Select-String trycloudflare
+#
+# Kept outside the main kustomization so CI deployments never go public.
+# The address changes each time this pod restarts (free "quick tunnel").
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: docling
+  labels:
+    app: cloudflared
+    app.kubernetes.io/part-of: docling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.10.3
+          args:
+            - tunnel
+            - --no-autoupdate
+            - --url
+            # Traefik, the cluster's Ingress controller: the same entry point
+            # as http://localhost:8080 on this machine.
+            - http://traefik.traefik.svc.cluster.local:80
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

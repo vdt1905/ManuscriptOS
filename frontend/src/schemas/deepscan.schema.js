@@ -1,4 +1,4 @@
-// DeepScan SSE + compile shapes (FastAPI /deepscan via NGINX).
+// DeepScan SSE + compile shapes (FastAPI, /deepscan).
 // Mirrors the `is_final` payload emitted by backend_ai/deepscan/agno_router.py.
 import { z } from 'zod';
 

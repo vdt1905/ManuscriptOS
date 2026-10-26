@@ -1,24 +1,15 @@
-# The backend_ai image builds from the REPO ROOT (context: .), so without this
-# it would copy the entire monorepo — frontend, node_modules, .git, the lot.
-# Exclude everything that doesn't belong in the Python service image.
-.git
+# Build context is ./backend_ai. Nothing secret or local-only may enter the image.
 .env
 .env.*
-
-# Frontend is built + deployed separately — never goes in the Python image.
-frontend
-node_modules
-
-# NGINX config is mounted into its own container, not baked here.
-nginx
-
-# Python noise + local data/caches.
 **/__pycache__
 *.pyc
 *.pyo
-**/*.db
-backend_ai/data/documents_store
-backend_ai/deepscan/output
+.pytest_cache
+tests
 
-# The Node backend has its own image.
-backend/node_modules
+# Runtime data: SQLite databases, uploaded documents and generated output
+# live on a volume at runtime, never in the image.
+data
+deepscan/output
+**/*.db
+**/*.db-*

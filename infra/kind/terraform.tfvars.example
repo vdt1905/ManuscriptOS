@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Everything is optional:
+# with no values the app still deploys, but AI features need a Groq key.
+
+groq_api_key = "gsk_..."
+
+# Optional
+# openai_api_key        = ""
+# github_token          = ""
+# cloudinary_cloud_name = ""
+# cloudinary_api_key    = ""
+# cloudinary_api_secret = ""
+
+# Leave empty to generate a random signing key / use the in-cluster MongoDB.
+# jwt_secret = ""
+# mongo_uri  = ""
+
+# Port on this machine for the app (default 8080).
+# http_port = 8080

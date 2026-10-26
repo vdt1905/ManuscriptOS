@@ -76,18 +76,34 @@ All secrets live in **one file: the repo-root `.env`** (gitignored). Docker Comp
 | `MONGO_URI` | yes for local run | e.g. an Atlas `mongodb+srv://…/hackamined` URI. Under Docker, unset falls back to the bundled `mongo` container |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | yes | profile pictures and uploads |
 | `OPENAI_API_KEY`, `GITHUB_TOKEN`, `LATEX_MODEL`, `LLM_PROVIDER`, `LLM_MODEL`, `REQUIRE_AUTH` | no | see `docker-compose.yml` for defaults |
-| `BACKEND_AI_PORT` | no | FastAPI port for the local run (default `8000`). Docker ignores it |
+| `BACKEND_AI_PORT` | no | FastAPI port (default `8000`), used by both the local run and the published docker port |
+| `VITE_EXPRESS_URL`, `VITE_AI_URL` | no | where the browser reaches the two backends (defaults `http://localhost:3000` / `http://localhost:8000`) |
 
-You can run the stack in either of two ways.
+### How the pieces fit together
+
+```
+React (Vite, :5173) ──▶ Express  (:3000) ──▶ MongoDB
+                    └─▶ FastAPI (:8000) ──▶ Groq, tectonic, pandoc
+```
+
+Three processes, no reverse proxy: the browser calls each backend on its own
+port, and both backends send permissive CORS headers. You can run them with
+Docker or directly on your machine.
 
 ### Option A: Docker
 
 ```bash
-docker compose up --build          # NGINX :80, Express, FastAPI, Mongo
-cd frontend && npm install && npm run dev
+docker compose up --build          # frontend, Express, FastAPI, Mongo
 ```
 
-Open http://localhost:5173.
+Open http://localhost:5173. (For live-reload while editing the frontend, run
+`npm run dev` in `frontend/` instead and stop the compose `frontend` service.)
+
+### AWS, Kubernetes, Terraform, CI/CD
+
+The full DevOps setup is described step by step in **[DEVOPS.md](DEVOPS.md)**:
+production on AWS (EC2 + S3 + CloudFront, all created by Terraform), a Kubernetes
+staging stage, hardened images, and a GitHub Actions pipeline with security gates.
 
 ### Option B: Run locally (without Docker)
 
@@ -127,16 +143,16 @@ $env:PATH = "$PWD\.venv;$PWD\.venv\Library\bin;$PWD\.venv\Scripts;$env:PATH"
 # Terminal 2: Express (:3000)
 npm start --prefix backend
 
-# Terminal 3: frontend. Vite detects the local backends and routes /api straight to them
+# Terminal 3: frontend
 npm run dev --prefix frontend
 ```
 </details>
 
 **Troubleshooting**
 
-- *"Port 8000 is already in use"*: another app is on it. Set `BACKEND_AI_PORT=8001` (or any free port) in `.env`; the Vite proxy follows automatically.
+- *"Port 8000 is already in use"*: another app is on it. Set `BACKEND_AI_PORT` and `VITE_AI_URL` in `.env` to a free port (they must agree).
 - *Vite says "Port 5173 is in use, trying another one"*: harmless. Use the URL it prints.
-- *"No backend is running" (HTTP 502)*: neither setup is up. `npm run dev` uses the local backends when Express answers on :3000, otherwise Docker's NGINX on :80, re-checked every couple of seconds; start one of them and retry.
+- *Requests fail with "Network Error" / "Failed to fetch"*: the backend that URL points at isn't running. Check `VITE_EXPRESS_URL` and `VITE_AI_URL` in `.env` against what is actually listening, and start the missing service.
 - *First PDF compile of a new document class is slow*: tectonic downloads the packages it needs once, then caches them.
 - *Login works under Docker but not locally, or the reverse*: they can use different databases (the Docker `mongo` container vs. `MONGO_URI`), so an account made in one doesn't exist in the other.
 

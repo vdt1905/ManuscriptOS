@@ -1,0 +1,86 @@
+# auth-service — Node/Express: sign-up, login (JWT) and projects.
+# Stateless (all data is in MongoDB), so it runs as 2 replicas behind one
+# Service and can be scaled freely.
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+spec:
+  selector:
+    app: auth-service
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }   # zero-downtime updates
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: auth-service
+          image: docling/auth-service
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          # Only the secrets this service needs (least privilege).
+          env:
+            - name: PORT
+              valueFrom:
+                configMapKeyRef: { name: docling-config, key: PORT }
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: MONGO_URI }
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: JWT_SECRET_KEY }
+            - name: CLOUDINARY_CLOUD_NAME
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: CLOUDINARY_CLOUD_NAME, optional: true }
+            - name: CLOUDINARY_API_KEY
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: CLOUDINARY_API_KEY, optional: true }
+            - name: CLOUDINARY_API_SECRET
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: CLOUDINARY_API_SECRET, optional: true }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3000 }   # ready = MongoDB connected
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

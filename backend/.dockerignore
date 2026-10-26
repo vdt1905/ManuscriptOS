@@ -1,7 +1,6 @@
-# Keep the Express image small + builds fast: never copy these into the image.
+# Keep the Express image small and secret-free.
 node_modules
 npm-debug.log
-.git
 .env
 .env.*
 *.md

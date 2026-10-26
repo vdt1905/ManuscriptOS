@@ -4,7 +4,7 @@ import { Button } from '../../components/Button';
 
 export function DocumentPreview({
   selectedFile, previewHtml, previewLoading, previewError,
-  onDownload, onRefresh,
+  onDownload, onDownloadPdf, exportingPdf, onRefresh,
 }) {
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-[#f8fafc]">
@@ -26,10 +26,16 @@ export function DocumentPreview({
 
         <div className="flex items-center gap-2 shrink-0">
           {selectedFile && (
-            <Button variant="secondary" size="sm" onClick={onDownload} className="h-9 gap-2 text-xs font-semibold px-4">
-              <Download className="w-4 h-4" />
-              Download
-            </Button>
+            <>
+              <Button variant="secondary" size="sm" onClick={onDownload} className="h-9 gap-2 text-xs font-semibold px-4">
+                <Download className="w-4 h-4" />
+                DOCX
+              </Button>
+              <Button variant="secondary" size="sm" onClick={onDownloadPdf} disabled={exportingPdf} className="h-9 gap-2 text-xs font-semibold px-4">
+                {exportingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                {exportingPdf ? 'Exporting…' : 'PDF'}
+              </Button>
+            </>
           )}
           <Button
             variant="primary" size="sm"

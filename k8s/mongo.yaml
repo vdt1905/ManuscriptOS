@@ -1,0 +1,85 @@
+# MongoDB — the auth-service's database.
+# A StatefulSet gives the pod a stable name and its own persistent volume,
+# so data survives pod restarts.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+spec:
+  clusterIP: None            # headless: stable DNS name mongo-0.mongo
+  selector:
+    app: mongo
+  ports:
+    - name: mongo
+      port: 27017
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+spec:
+  serviceName: mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999            # the image's "mongodb" user
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mongo
+          image: mongo:7
+          args: ["--wiredTigerCacheSizeGB", "0.25"]   # keep memory small
+          ports:
+            - containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: MONGO_ROOT_USERNAME }
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: docling-secrets, key: MONGO_ROOT_PASSWORD }
+          readinessProbe:
+            tcpSocket: { port: 27017 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 27017 }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true      # writable only where mounted below
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: tmp                       # unix socket + first-start config
+              mountPath: /tmp
+            - name: configdb
+              mountPath: /data/configdb
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: configdb
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

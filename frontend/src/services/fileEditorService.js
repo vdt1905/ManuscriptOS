@@ -1,4 +1,4 @@
-// DocBot file-editor API (FastAPI /files via NGINX).
+// DocBot file-editor API (FastAPI, /files).
 import { ENDPOINTS } from '../config/api';
 import { request } from './httpClient';
 

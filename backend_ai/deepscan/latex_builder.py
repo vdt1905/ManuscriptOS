@@ -332,7 +332,8 @@ def caption_text(latex: str) -> str:
 
 def heading_text(text: str) -> str:
     """Drop any numbering the source carried; LaTeX numbers sections itself."""
-    return re.sub(r"^(?:[IVXLC]+|[A-Za-z]|\d+(?:\.\d+)*)[\.\)]\s+", "", text.strip())
+    # "II. ", "A) ", "3. " need their dot/bracket; "1.2 " and "4 " don't.
+    return re.sub(r"^(?:(?:[IVXLC]+|[A-Za-z])[.)]|\d+(?:\.\d+)*[.)]?)\s+", "", text.strip())
 
 
 # ── Document assembly ────────────────────────────────────────

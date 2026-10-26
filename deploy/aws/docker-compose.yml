@@ -1,0 +1,66 @@
+# =============================================================================
+# Docling AI — production stack on the AWS server (EC2)
+# =============================================================================
+# Only the two API microservices run here:
+#   auth-service  host port 8001 -> container 3000
+#   ai-service    host port 8000 -> container 8000
+# The website (frontend) is served from S3 by CloudFront, and MongoDB is
+# MongoDB Atlas, so the 1 GB free-tier-sized server only runs what it must.
+#
+# The pipeline copies this file to /opt/docling and runs deploy.sh, which
+# writes /opt/docling/.env (image tag + secrets from SSM Parameter Store).
+# The ports are reachable only from CloudFront (AWS security group).
+# =============================================================================
+name: docling
+
+x-hardening: &hardening
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+
+  auth-service:
+    <<: *hardening
+    image: ghcr.io/${IMAGE_OWNER}/docling-auth-service:${IMAGE_TAG}
+    ports:
+      - "8001:3000"
+    environment:
+      PORT: "3000"
+      NODE_OPTIONS: "--max-old-space-size=192"
+      MONGO_URI: ${MONGO_URI}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME:-}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY:-}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET:-}
+    read_only: true          # nothing in the container can be modified
+    tmpfs: [/tmp]
+    mem_limit: 300m
+
+  ai-service:
+    <<: *hardening
+    image: ghcr.io/${IMAGE_OWNER}/docling-ai-service:${IMAGE_TAG}
+    ports:
+      - "8000:8000"
+    environment:
+      LLM_PROVIDER: groq
+      LLM_MODEL: openai/gpt-oss-120b
+      LATEX_MODEL: openai/gpt-oss-120b
+      REQUIRE_AUTH: "true"   # public site: AI endpoints need a login token
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - ai-data:/app/backend_ai/data              # chat history, DocBot documents
+      - ai-output:/app/backend_ai/deepscan/output
+    # Not read-only: tectonic keeps the LaTeX packages pre-downloaded into the
+    # image (and any new ones) in its cache under the home directory.
+    mem_limit: 900m          # RAM + swap; LaTeX/PDF jobs need short bursts
+
+volumes:
+  ai-data:
+  ai-output:

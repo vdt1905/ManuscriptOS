@@ -1,0 +1,19 @@
+# Zero-trust for the database: only the auth-service may open a connection
+# to MongoDB. Every other pod (including a compromised one) is refused.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-allow-auth-service-only
+spec:
+  podSelector:
+    matchLabels:
+      app: mongo
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: auth-service
+      ports:
+        - port: 27017
+          protocol: TCP

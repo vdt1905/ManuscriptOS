@@ -81,6 +81,10 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*", "Authorization", "X-Session-Token"],
+    # The SPA calls this service cross-origin, and a browser hides custom
+    # response headers unless they are listed here (the compile endpoint
+    # returns its auto-fix notes in X-Latex-Notes).
+    expose_headers=["X-Latex-Notes", "Content-Disposition"],
 )
 app.add_middleware(
     JWTAuthMiddleware,

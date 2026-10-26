@@ -13,6 +13,21 @@
   --color-primary-900: #bc6c25;
   /* Copper */
 
+  /* Shades the components use but the palette above never defined. An
+     undefined var() makes e.g. hover:bg-[var(--color-primary-700)]
+     transparent, so dark buttons turned into white text on the cream page
+     (invisible) on hover. */
+  --color-primary-200: #e9e3b8;
+  /* Light khaki (soft borders) */
+  --color-primary-300: #cbbf8a;
+  /* Khaki (borders) */
+  --color-primary-400: #8b9a5b;
+  /* Light olive */
+  --color-primary-700: #3b4a24;
+  /* Dark olive (hover for primary-600 buttons, strong text) */
+  --color-primary-800: #1f2a12;
+  /* Deepest forest (text) */
+
   --color-surface-50: #fefae0;
   /* Cornsilk (Base Background) */
   --color-surface-100: #f4efd3;
@@ -21,6 +36,8 @@
   /* Borders and hover states */
   --color-surface-300: #d4caa3;
   /* Deeper borders */
+  --color-surface-400: #b3a982;
+  /* Muted icons on cream */
 
   --color-text-main: #283618;
   /* Black Forest for main text */

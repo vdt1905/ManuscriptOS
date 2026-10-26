@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { API, ENDPOINTS } from '../config/api';
 import {
   Code2, Copy, Check, ExternalLink, Zap, BookOpen,
   Bot, Layers, ChevronDown, ChevronUp
@@ -112,11 +113,13 @@ function FeatureCard({ icon: Icon, title, desc }) {
 ══════════════════════════════════════════════════════════ */
 export function Integrations() {
   const [activeTab, setActiveTab] = useState('python');
+  // Shown in the snippets/links below so the docs match this build's config.
+  const AI = API.AI;
 
   const snippets = {
     python: `import requests
 
-API_BASE = "http://localhost:8000/deepscan/api/v2"
+API_BASE = "${AI}/deepscan/api/v2"
 
 # Format a manuscript with the Deep Scan pipeline (streaming SSE)
 with open("manuscript.docx", "rb") as f:
@@ -137,22 +140,22 @@ for line in response.iter_lines():
             print("LaTeX:", payload["latex"][:200])`,
 
     curl: `# 1. Deep Scan formatting pipeline (streaming)
-curl -X POST http://localhost:8000/deepscan/api/v2/pipeline/stream \\
+curl -X POST ${AI}/deepscan/api/v2/pipeline/stream \\
   -F "file=@manuscript.docx" \\
   -F "style=ieee" \\
   --no-buffer
 
 # 2. Ask the Dockyyy research assistant
-curl -X POST http://localhost:8000/api/v2/ask \\
+curl -X POST ${AI}/api/v2/ask \\
   -H "Content-Type: application/json" \\
   -d '{"query": "Which conferences does Docling support?"}'
 
 # 3. DocBot natural-language document editing
-curl -X POST http://localhost:8000/files/chat \\
+curl -X POST ${AI}/files/chat \\
   -H "Content-Type: application/json" \\
   -d '{"message": "Make the abstract more concise", "session_id": "abc"}'`,
 
-    js: `const API_BASE = "http://localhost:8000/deepscan/api/v2";
+    js: `const API_BASE = "${AI}/deepscan/api/v2";
 
 async function formatDocument(file, style = "ieee") {
   const formData = new FormData();
@@ -254,9 +257,9 @@ async function formatDocument(file, style = "ieee") {
           <h3 className="font-semibold text-[var(--color-text-main)] text-sm uppercase tracking-wide">Base URLs</h3>
           <div className="grid sm:grid-cols-2 gap-3 text-sm font-mono">
             {[
-              { label: 'Deep Scan Pipeline', url: 'http://localhost:8000/deepscan/api/v2' },
-              { label: 'Dockyyy Chatbot', url: 'http://localhost:8000/api/v2' },
-              { label: 'DocBot Editor', url: 'http://localhost:8000/files' },
+              { label: 'Deep Scan Pipeline', url: ENDPOINTS.deepScan + '/api/v2' },
+              { label: 'Dockyyy Chatbot', url: ENDPOINTS.chatbot },
+              { label: 'DocBot Editor', url: ENDPOINTS.fileEditor },
               { label: 'Express API (auth/projects)', url: 'http://localhost:3000/api' },
             ].map(b => (
               <div key={b.url} className="flex flex-col gap-1 p-3 rounded-lg bg-[var(--color-surface-50)] border border-[var(--color-surface-200)]">
@@ -346,7 +349,7 @@ CLOUDINARY_CLOUD_NAME=...`} />
           </Accordion>
           <Accordion title="Can I run Docling on my own server?">
             <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">
-              Yes — the backend is a FastAPI app and the API server is Express. Serve them behind nginx or any reverse proxy.
+              Yes — the AI service is a FastAPI app and the API server is Express. Run them on any two ports; the frontend is pointed at them with VITE_EXPRESS_URL and VITE_AI_URL.
               Remember to set appropriate CORS origins in production.
             </p>
           </Accordion>
@@ -374,7 +377,7 @@ CLOUDINARY_CLOUD_NAME=...`} />
         </p>
         <div className="flex justify-center gap-4 flex-wrap pt-2">
           <a
-            href="http://localhost:8000/docs"
+            href={`${AI}/docs`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[var(--color-surface-100)] text-[var(--color-text-main)] text-sm font-bold hover:bg-white transition-colors shadow-md"
@@ -382,7 +385,7 @@ CLOUDINARY_CLOUD_NAME=...`} />
             <BookOpen className="w-4 h-4" /> API Docs (Swagger)
           </a>
           <a
-            href="http://localhost:8000/deepscan/docs"
+            href={`${AI}/deepscan/docs`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white/10 text-[var(--color-primary-50)] border border-white/20 text-sm font-bold hover:bg-white/20 transition-colors"

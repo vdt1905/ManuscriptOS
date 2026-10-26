@@ -1,0 +1,19 @@
+# Non-secret settings shared by the services. Secrets (API keys, passwords,
+# the JWT key) live in the Secret "docling-secrets", created by Terraform.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: docling-config
+data:
+  # auth-service
+  PORT: "3000"
+  # ai-service
+  BACKEND_AI_HOST: "0.0.0.0"
+  BACKEND_AI_PORT: "8000"
+  LLM_PROVIDER: "groq"
+  LLM_MODEL: "openai/gpt-oss-120b"
+  LATEX_MODEL: "openai/gpt-oss-120b"
+  # Every AI endpoint requires a valid login token. The app is reachable from
+  # the internet through the tunnel, so anonymous use (and spending the API
+  # key) must not be possible.
+  REQUIRE_AUTH: "true"

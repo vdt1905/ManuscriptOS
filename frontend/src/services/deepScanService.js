@@ -1,4 +1,4 @@
-// DeepScan API (FastAPI /deepscan via NGINX).
+// DeepScan API (FastAPI, /deepscan).
 //
 // Most calls are plain JSON through request(). TWO are special and use fetch
 // directly (documented inline): the SSE pipeline stream and the compile call

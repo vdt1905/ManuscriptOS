@@ -49,3 +49,6 @@ thefuzz              # fuzzy author-name matching in citation_engine (was undecl
 # PyMuPDF (fitz) powers PDF→LaTeX ingestion.
 pypandoc
 PyMuPDF
+
+# ── DocBot PDF support — PDF uploads become editable DOCX ─────────────────
+pdf2docx

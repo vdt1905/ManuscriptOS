@@ -109,10 +109,14 @@ export function AdvanceWorkspace() {
         const formData = new FormData();
         formData.append('file', file);
         try {
-            const res = await axios.post(`${API_BASE}/documents/upload`, formData);
+            // PDFs are converted server-side (a few seconds per 10 pages)
+            const res = await axios.post(`${API_BASE}/documents/upload`, formData, { timeout: 300000 });
             if (res.data?.filename) {
                 await refetchDocuments();
                 handleSelectFile(res.data.filename, false);
+                if (res.data.converted_from === 'pdf') {
+                    toast({ title: 'PDF converted', description: `DocBot can now edit ${res.data.filename}. Use the PDF button to export it back.`, variant: 'success' });
+                }
             }
         } catch (err) {
             alert('Upload Error: ' + (err.response?.data?.detail || err.message));
@@ -123,18 +127,42 @@ export function AdvanceWorkspace() {
     };
 
     /* ── Download ── */
+    // fetch rather than navigate: a plain navigation cannot send the auth
+    // header, and on failure it replaced the whole app with a JSON error page
+    const downloadAs = async (format) => {
+        const stem = selectedFile.replace(/\.docx$/i, '');
+        const res = await axios.get(
+            `${API_BASE}/documents/${encodeURIComponent(selectedFile)}/download`,
+            { params: { format }, responseType: 'blob', timeout: 300000 },
+        );
+        const url = URL.createObjectURL(res.data);
+        const a = document.createElement('a');
+        a.href = url; a.download = format === 'pdf' ? `${stem}.pdf` : selectedFile; a.click();
+        URL.revokeObjectURL(url);
+    };
+
     const handleDownload = async () => {
         if (!selectedFile) return;
-        // fetch rather than navigate: a plain navigation cannot send the auth
-        // header, and on failure it replaced the whole app with a JSON error page
         try {
-            const res = await axios.get(`${API_BASE}/documents/${encodeURIComponent(selectedFile)}/download`, { responseType: 'blob' });
-            const url = URL.createObjectURL(res.data);
-            const a = document.createElement('a');
-            a.href = url; a.download = selectedFile; a.click();
-            URL.revokeObjectURL(url);
+            await downloadAs('docx');
         } catch (e) {
             toast({ title: 'Download failed', description: e.response?.statusText || e.message, variant: 'error' });
+        }
+    };
+
+    const [exportingPdf, setExportingPdf] = useState(false);
+    const handleDownloadPdf = async () => {
+        if (!selectedFile) return;
+        setExportingPdf(true);
+        try {
+            await downloadAs('pdf');
+        } catch (e) {
+            // the error body is a Blob here; read the server's message out of it
+            let detail = e.message;
+            try { detail = JSON.parse(await e.response.data.text()).detail || detail; } catch { /* keep e.message */ }
+            toast({ title: 'PDF export failed', description: detail, variant: 'error' });
+        } finally {
+            setExportingPdf(false);
         }
     };
 
@@ -232,6 +260,8 @@ export function AdvanceWorkspace() {
                 previewLoading={previewLoading}
                 previewError={previewError}
                 onDownload={handleDownload}
+                onDownloadPdf={handleDownloadPdf}
+                exportingPdf={exportingPdf}
                 onRefresh={refreshPreview}
             />
             <DocumentLibrary

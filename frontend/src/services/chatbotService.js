@@ -1,4 +1,4 @@
-// Dockyyy chatbot API (FastAPI /api/v2 via NGINX).
+// Dockyyy chatbot API (FastAPI, /api/v2).
 import { ENDPOINTS } from '../config/api';
 import { request } from './httpClient';
 

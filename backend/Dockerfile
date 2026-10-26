@@ -1,17 +1,25 @@
 # ─────────────────────────────────────────────────────────────
-# Docling AI — Node / Express backend (backend)
+# auth-service — Node/Express: sign-up/login (JWT) and projects
+# Build context: ./backend
 # ─────────────────────────────────────────────────────────────
-FROM node:20-alpine AS base
+FROM node:22-alpine
 
+ENV NODE_ENV=production
 WORKDIR /app
 
-# Copy package files first (layer cache — only re-runs npm install
-# when package.json actually changes, not on every code change)
-COPY backend/package.json backend/package-lock.json* ./
-RUN npm install --omit=dev
+# Dependencies first (cached until package.json / the lockfile change).
+# npm ci installs exactly what package-lock.json pins: reproducible builds.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Copy the rest of the Express source
-COPY backend/ .
+COPY --chown=node:node . .
 
+# The official image ships an unprivileged "node" user (uid 1000). A numeric
+# USER lets Kubernetes verify runAsNonRoot.
+USER 1000:1000
 EXPOSE 3000
-CMD ["npm", "start"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/healthz"]
+
+CMD ["node", "server.js"]

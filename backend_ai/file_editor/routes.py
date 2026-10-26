@@ -35,7 +35,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 # ── Logging ──────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ if _ENV_FILE.exists():
 # legacy default (relative "documents_store") when run standalone.
 DOCUMENTS_DIR = Path(os.getenv("DOCUMENTS_DIR") or "documents_store").resolve()
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # matches nginx client_max_body_size
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # 50 MB ceiling for one upload
 os.environ["DOCUMENTS_DIR"] = str(DOCUMENTS_DIR)
 
 
@@ -1128,11 +1128,41 @@ async def api_create_document(req: CreateDocumentRequest):
     return {"filename": filename, "message": f"Document '{req.title}' created."}
 
 
+def _pdf_to_docx(pdf_path: Path, docx_path: Path) -> None:
+    """Convert a PDF into an editable DOCX (text, fonts, images, tables).
+
+    DocBot's tools all work on python-docx documents, so a PDF is edited as
+    the DOCX it converts to; /download?format=pdf turns it back into a PDF.
+    """
+    from pdf2docx import Converter
+
+    cv = Converter(str(pdf_path))
+    try:
+        cv.convert(str(docx_path))
+    finally:
+        cv.close()
+
+
+def _docx_to_pdf(docx_path: Path, pdf_path: Path) -> None:
+    """Render a DOCX as PDF with pandoc, using tectonic as the TeX engine
+    (both ship with backend_ai). Keeps all the text; layout is simplified."""
+    import pypandoc
+
+    pypandoc.convert_file(
+        str(docx_path), "pdf", outputfile=str(pdf_path),
+        extra_args=["--pdf-engine=tectonic"],
+    )
+
+
 @router.post("/documents/upload")
 async def api_upload_document(file: UploadFile = File(...)):
-    if not file.filename or not file.filename.endswith(".docx"):
-        raise HTTPException(status_code=400, detail="Only .docx files are accepted.")
-    dest = DOCUMENTS_DIR / Path(file.filename).name
+    name = (file.filename or "").strip()
+    is_pdf = name.lower().endswith(".pdf")
+    if not name or not (is_pdf or name.lower().endswith(".docx")):
+        raise HTTPException(status_code=400, detail="Only .docx and .pdf files are accepted.")
+    if is_pdf:
+        return await _upload_pdf(file, name)
+    dest = DOCUMENTS_DIR / Path(name).name
 
     def _write_bounded() -> None:
         written = 0
@@ -1158,6 +1188,41 @@ async def api_upload_document(file: UploadFile = File(...)):
     return {"message": f"Uploaded '{dest.name}'.", "filename": dest.name, "size_bytes": stat.st_size}
 
 
+async def _upload_pdf(file: UploadFile, name: str) -> dict:
+    """Store an uploaded PDF as the DOCX DocBot can edit."""
+    import tempfile
+
+    dest = DOCUMENTS_DIR / (Path(name).stem + ".docx")
+    with tempfile.TemporaryDirectory(prefix="docbot_pdf_") as tmp:
+        pdf_path = Path(tmp) / "upload.pdf"
+
+        def _write_bounded() -> None:
+            written = 0
+            with open(pdf_path, "wb") as f:
+                while chunk := file.file.read(1 << 20):
+                    written += len(chunk)
+                    if written > MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=413, detail="File too large (limit 50 MB).")
+                    f.write(chunk)
+
+        await asyncio.to_thread(_write_bounded)
+        if not pdf_path.read_bytes()[:5].startswith(b"%PDF"):
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF.")
+        try:
+            await asyncio.to_thread(_pdf_to_docx, pdf_path, dest)
+            Document(str(dest))   # the conversion produced a readable docx
+        except Exception as exc:  # scanned/encrypted PDFs, or converter failures
+            dest.unlink(missing_ok=True)
+            log.exception("PDF -> DOCX conversion failed for %s", name)
+            raise HTTPException(status_code=422, detail=f"Could not convert this PDF into an editable document: {exc}")
+    return {
+        "message": f"Converted '{name}' into an editable document '{dest.name}'.",
+        "filename": dest.name,
+        "size_bytes": dest.stat().st_size,
+        "converted_from": "pdf",
+    }
+
+
 @router.get("/documents/{filename}")
 async def api_get_document_info(filename: str):
     try:
@@ -1179,10 +1244,30 @@ async def api_get_document_info(filename: str):
 
 
 @router.get("/documents/{filename}/download")
-async def api_download_document(filename: str):
+async def api_download_document(filename: str, format: str = "docx"):
+    """Download a document as .docx (default) or rendered to .pdf."""
     path = _resolve(filename)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Document '{filename}' not found.")
+    if format.lower() == "pdf":
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="docbot_export_") as tmp:
+            out = Path(tmp) / (path.stem + ".pdf")
+            try:
+                await asyncio.to_thread(_docx_to_pdf, path, out)
+                data = out.read_bytes()
+            except Exception as exc:
+                log.exception("DOCX -> PDF export failed for %s", filename)
+                if "xmalloc" in str(exc) or "MemoryError" in type(exc).__name__:
+                    raise HTTPException(status_code=503, detail=(
+                        "The server ran out of memory while making the PDF. "
+                        "Close some apps and try again."))
+                raise HTTPException(status_code=500, detail=f"Could not export this document as PDF: {exc}")
+        return Response(
+            content=data, media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{path.stem}.pdf"'},
+        )
     return FileResponse(
         path=str(path), filename=path.name,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

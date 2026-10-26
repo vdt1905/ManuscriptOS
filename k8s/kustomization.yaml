@@ -1,0 +1,35 @@
+# Docling AI on Kubernetes — the whole application in one command:
+#
+#     kubectl apply -k k8s
+#
+# The namespace and the Secret "docling-secrets" are created by Terraform
+# (infra/kind), so no secret value is ever stored in this repository.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: docling
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: docling
+    includeSelectors: false
+
+resources:
+  - configmap.yaml
+  - mongo.yaml
+  - auth-service.yaml
+  - ai-service.yaml
+  - frontend.yaml
+  - ingress.yaml
+  - network-policy.yaml
+  - autoscaling.yaml
+
+# Image names used by the Deployments. Local builds are tagged ":local" and
+# loaded into the cluster with `kind load docker-image`.
+images:
+  - name: docling/frontend
+    newTag: local
+  - name: docling/auth-service
+    newTag: local
+  - name: docling/ai-service
+    newTag: local
